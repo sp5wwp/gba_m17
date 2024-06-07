@@ -1,0 +1,322 @@
+#include <stdio.h>
+#include <stdint.h>
+#include <string.h>
+#include <stdarg.h>
+#include <math.h>
+#include <m17.h>
+#include "fonts.h"
+
+#define SCREEN_WIDTH			240
+#define SCREEN_HEIGHT			160
+
+#define MEM_IO					0x04000000
+#define MEM_VRAM				((volatile uint16_t *)0x06000000)
+
+#define REG_DISPLAY				(*((volatile uint32_t *)(MEM_IO)))
+#define REG_DISPLAY_VCOUNT		(*((volatile uint32_t *)(MEM_IO + 0x0006)))
+#define REG_KEY_INPUT			(*((volatile uint32_t *)(MEM_IO + 0x0130)))
+
+#define FRAME_SEL_BIT			0x0010
+#define BG2_ENABLE				0x0400
+
+#define BUTTON_A				0x0001      // A Button
+#define BUTTON_B				0x0002      // B Button
+#define BUTTON_SELECT			0x0004      // select button
+#define BUTTON_START			0x0008      // START button
+#define KEYPAD_RIGHT			0x0010      // Right key
+#define KEYPAD_LEFT				0x0020      // Left key
+#define KEYPAD_UP				0x0040      // Up key
+#define KEYPAD_DOWN				0x0080      // Down key
+#define BUTTON_RIGHT			0x0100      // R shoulder Button
+#define BUTTON_LEFT				0x0200		// L shoulder Button
+#define KEY_ANY					0x03FF
+
+#define SAMP_RATE				(0xFFFF-699+1)			// 2^24/699 = 24,000 Hz
+#define REG_SOUNDCNT_X			*(uint32_t*)0x04000084
+#define SND_ENABLED				0x00000080
+#define REG_SOUNDCNT_L			*(uint16_t*)0x04000080
+#define REG_SOUNDCNT_H			*(uint16_t*)0x04000082
+#define SND_ENABLED				0x00000080
+#define SND_OUTPUT_RATIO_25		0x0000
+#define SND_OUTPUT_RATIO_50		0x0001
+#define SND_OUTPUT_RATIO_100	0x0002
+#define DSA_OUTPUT_RATIO_50		0x0000
+#define DSA_OUTPUT_RATIO_100	0x0004
+#define DSA_OUTPUT_TO_RIGHT		0x0100
+#define DSA_OUTPUT_TO_LEFT		0x0200
+#define DSA_OUTPUT_TO_BOTH		0x0300
+#define DSA_TIMER0				0x0000
+#define DSA_TIMER1				0x0400
+#define DSA_FIFO_RESET			0x0800
+#define DSB_OUTPUT_RATIO_50		0x0000
+#define DSB_OUTPUT_RATIO_100	0x0008
+#define DSB_OUTPUT_TO_RIGHT		0x1000
+#define DSB_OUTPUT_TO_LEFT		0x2000
+#define DSB_OUTPUT_TO_BOTH		0x3000
+#define DSB_TIMER0				0x0000
+#define DSB_TIMER1				0x4000
+#define DSB_FIFO_RESET			0x8000
+//DMA channel 1 register definitions
+#define REG_DMA1SAD				*(uint32_t*)0x40000BC // source address
+#define REG_DMA1DAD				*(uint32_t*)0x40000C0 // destination address
+#define REG_DMA1CNT				*(uint32_t*)0x40000C4 // control register
+//DMA flags
+#define WORD_DMA				0x04000000
+#define HALF_WORD_DMA			0x00000000
+#define ENABLE_DMA				0x80000000
+#define START_ON_FIFO_EMPTY		0x30000000
+#define DMA_REPEAT				0x02000000
+#define DEST_REG_SAME			0x00400000
+//Timer0 register definitions
+#define REG_TM0D				*(uint16_t*)0x4000100
+#define REG_TM0CNT				*(uint16_t*)0x4000102
+//Timer flags
+#define TIMER_ENABLED			0x0080
+//FIFO address defines
+#define REG_FIFO_A				0x040000A0
+#define REG_FIFO_B				0x040000A4
+
+//M17 stuff
+char msg[64];
+
+uint8_t dst_raw[10]={'A', 'L', 'L', '\0'};                  //raw, unencoded destination address
+uint8_t src_raw[10]={'N', '0', 'C', 'A', 'L', 'L', '\0'};
+uint8_t can=0;
+
+struct LSF lsf;
+
+float full_packet[6912+88];
+uint8_t full_packet_data[32*25];
+uint16_t pkt_sym_cnt=0;
+uint16_t num_bytes=0;
+
+uint8_t enc_bits[SYM_PER_PLD*2];
+uint8_t rf_bits[SYM_PER_PLD*2];
+
+int8_t samples[4*6]; //for a 1kHz tone, fs=24kHz
+
+//Functions
+//GBA
+//form a 16-bit BGR GBA colour from three component values
+uint16_t color(uint8_t r, uint8_t g, uint8_t b)
+{
+	r>>=3;
+	g>>=3;
+	b>>=3;
+
+	return ((uint16_t)b<<10)|((uint16_t)g<<5)|(uint16_t)r;
+}
+
+void set_pixel(uint16_t x, uint16_t y, uint8_t r, uint8_t g, uint8_t b)
+{
+	MEM_VRAM[y*240+x] = color(r, g, b);
+}
+
+void put_letter(const char c, uint16_t x, uint16_t y, uint8_t r, uint8_t g, uint8_t b)
+{
+	for(uint8_t i=0; i<8; i++)
+	{
+		for(uint8_t j=0; j<5; j++)
+		{
+			if(font_5_8[(uint8_t)c-0x20][j]&(1<<i))
+				set_pixel(x+j, y+i, r, g, b);
+			//else
+				//set_pixel(x+j, y+i, 0, 0, 0);
+		}
+	}
+}
+
+void put_string(const char *str, uint16_t x, uint16_t y, uint8_t r, uint8_t g, uint8_t b)
+{
+	for(uint8_t i=0; i<strlen(str); i++)
+	{
+		put_letter(str[i], x, y, r, g, b);
+		x+=6;
+	}
+}
+
+void str_print(const uint16_t x, const uint16_t y, const uint8_t r, const uint8_t g, const uint8_t b, const char* fmt, ...)
+{
+	char str[50];
+	va_list ap;
+
+	va_start(ap, fmt);
+	vsprintf(str, fmt, ap);
+	va_end(ap);
+
+	put_string(str, x, y, r, g, b);
+}
+
+//M17-related
+//type - 0 - preamble before LSF (standard)
+//type - 1 - preamble before BERT transmission
+void fill_preamble(float* out, const uint8_t type)
+{
+    if(type) //pre-BERT
+    {
+        for(uint16_t i=0; i<SYM_PER_FRA/2; i++) //40ms * 4800 = 192
+        {
+            out[2*i]  =-3.0;
+            out[2*i+1]=+3.0;
+        }
+    }
+    else //pre-LSF
+    {
+        for(uint16_t i=0; i<SYM_PER_FRA/2; i++) //40ms * 4800 = 192
+        {
+            out[2*i]  =+3.0;
+            out[2*i+1]=-3.0;
+        }
+    }
+}
+
+//fill with syncword symbols
+void fill_syncword(float* out, uint16_t* cnt, const uint16_t syncword)
+{
+    float symb=0.0f;
+
+    for(uint8_t i=0; i<16; i+=2)
+    {
+        symb=symbol_map[(syncword>>(14-i))&3];
+        out[*cnt]=symb;
+        (*cnt)++;
+    }
+}
+
+//fill packet symbols array with data (can be used for both LSF and frames)
+void fill_data(float* out, uint16_t* cnt, const uint8_t* in)
+{
+	float symb=0.0f;
+
+	for(uint16_t i=0; i<SYM_PER_PLD; i++) //40ms * 4800 - 8 (syncword)
+	{
+		symb=symbol_map[in[2*i]*2+in[2*i+1]];
+		out[*cnt]=symb;
+		(*cnt)++;
+	}
+}
+
+int main(void)
+{
+	//config display
+	REG_DISPLAY = 3 | BG2_ENABLE;
+	REG_DISPLAY &= ~FRAME_SEL_BIT;
+
+	//config sound
+	for(uint8_t i=0; i<24; i++)
+		samples[i]=127*sinf(i/24.0f * 2.0f * M_PI);
+	REG_SOUNDCNT_X = SND_ENABLED;
+	REG_SOUNDCNT_L = 0;
+	REG_SOUNDCNT_H = SND_OUTPUT_RATIO_100 | DSA_OUTPUT_RATIO_100 | DSA_OUTPUT_TO_BOTH | DSA_TIMER0 | DSA_FIFO_RESET;	//Channel A, full volume, TIM0
+	//Timer0
+	REG_TM0D = SAMP_RATE;
+	REG_TM0CNT = TIMER_ENABLED;
+	// DMA channel 1
+	REG_DMA1SAD = (uint32_t)samples;
+	REG_DMA1DAD = (uint32_t)REG_FIFO_A;
+	REG_DMA1CNT = ENABLE_DMA | START_ON_FIFO_EMPTY | WORD_DMA | DMA_REPEAT | (sizeof(samples)/4);
+
+	//M17 stuff
+	sprintf(msg, "Test message.");
+	sprintf(src_raw, "SP5WWP");
+	str_print(0, 0*9, 255, 255, 255, "GBA"); str_print(20, 0*9, 255, 255, 255, "M"); str_print(25, 0*9, 255, 0, 0, "17"); str_print(35, 0*9, 255, 255, 255, " Packet Encoder by SP5WWP");
+	str_print(0, 2*9, 255, 255, 255, "DST: %s", dst_raw); //doesn't work without "-specs=nosys.specs"
+	str_print(0, 3*9, 255, 255, 255, "SRC: %s", src_raw);
+	str_print(0, 4*9, 255, 255, 255, "Message: %s", msg);
+	//obtain data and append with CRC
+	memset(full_packet_data, 0, 32*25);
+	full_packet_data[0]=0x05;
+	num_bytes=sprintf((char*)&full_packet_data[1], msg)+2; //0x05 and 0x00
+	uint16_t packet_crc=CRC_M17(full_packet_data, num_bytes);
+	full_packet_data[num_bytes]  =packet_crc>>8;
+	full_packet_data[num_bytes+1]=packet_crc&0xFF;
+	num_bytes+=2; //count 2-byte CRC too
+
+	//encode dst, src for the lsf struct
+	uint64_t dst_encoded=0, src_encoded=0;
+	uint16_t type=0;
+	encode_callsign_value(&dst_encoded, dst_raw);
+	encode_callsign_value(&src_encoded, src_raw);
+	for(int8_t i=5; i>=0; i--)
+	{
+		lsf.dst[5-i]=(dst_encoded>>(i*8))&0xFF;
+		lsf.src[5-i]=(src_encoded>>(i*8))&0xFF;
+	}
+
+	//fprintf(stderr, "DST: %s\t%012lX\nSRC: %s\t%012lX\n", dst_raw, dst_encoded, src_raw, src_encoded);
+	//fprintf(stderr, "Data CRC:\t%04hX\n", packet_crc);
+	type=((uint16_t)0x01<<1)|((uint16_t)can<<7); //packet mode, content: data
+	lsf.type[0]=(uint16_t)type>>8;
+	lsf.type[1]=(uint16_t)type&0xFF;
+	memset(&lsf.meta, 0, 112/8);
+
+	//calculate LSF CRC
+	uint16_t lsf_crc=LSF_CRC(&lsf);
+	lsf.crc[0]=lsf_crc>>8;
+	lsf.crc[1]=lsf_crc&0xFF;
+	//fprintf(stderr, "LSF CRC:\t%04hX\n", lsf_crc);
+
+	//encode LSF data
+	conv_encode_LSF(enc_bits, &lsf);
+
+	//fill preamble
+	memset((uint8_t*)full_packet, 0, sizeof(float)*(6912+88));
+	fill_preamble(full_packet, 0);
+	pkt_sym_cnt=SYM_PER_FRA;
+
+	//send LSF syncword
+	fill_syncword(full_packet, &pkt_sym_cnt, SYNC_LSF);
+
+	//reorder bits
+	for(uint16_t i=0; i<SYM_PER_PLD*2; i++)
+		rf_bits[i]=enc_bits[intrl_seq[i]];
+
+	//randomize
+	for(uint16_t i=0; i<SYM_PER_PLD*2; i++)
+	{
+		if((rand_seq[i/8]>>(7-(i%8)))&1) //flip bit if '1'
+		{
+			if(rf_bits[i])
+				rf_bits[i]=0;
+			else
+				rf_bits[i]=1;
+		}
+	}
+
+	//fill packet with LSF
+	fill_data(full_packet, &pkt_sym_cnt, rf_bits);
+
+	//generate frames
+	;
+
+	//send EOT
+    for(uint8_t i=0; i<SYM_PER_FRA/SYM_PER_SWD; i++) //192/8=24
+        fill_syncword(full_packet, &pkt_sym_cnt, EOT_MRKR);
+
+	str_print(0, 6*9, 255, 255, 255, "LSF_CRC=%04X PKT_CRC=%04X", lsf_crc, packet_crc);
+	str_print(0, SCREEN_HEIGHT-1*9+1, 255, 255, 255, "Press A to transmit.");
+
+	uint32_t key_states = 0;
+
+	while(1)
+	{
+		//skip past the rest of any current V-blank, then skip past the V-draw
+		while(REG_DISPLAY_VCOUNT >= SCREEN_HEIGHT);
+		while(REG_DISPLAY_VCOUNT <  SCREEN_HEIGHT);
+
+		//get current key states (REG_KEY_INPUT stores the states inverted)
+		key_states = ~REG_KEY_INPUT & KEY_ANY;
+
+		/*if(key_states & KEYPAD_LEFT)
+			;
+		else
+			;
+
+		if(key_states & KEYPAD_RIGHT)
+			put_letter('>', 10, 10, 0xFF, 0xFF, 0xFF);
+		else
+			;*/
+	}
+
+	return 0;
+}
