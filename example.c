@@ -32,11 +32,10 @@
 #define KEY_ANY					0x03FF
 
 #define SAMP_RATE				(0xFFFF-699+1)			// 2^24/699 = 24,000 Hz
-#define REG_SOUNDCNT_X			*(uint32_t*)0x04000084
-#define SND_ENABLED				0x00000080
-#define REG_SOUNDCNT_L			*(uint16_t*)0x04000080
-#define REG_SOUNDCNT_H			*(uint16_t*)0x04000082
-#define SND_ENABLED				0x00000080
+#define	REG_SOUNDCNT_L			(*((uint16_t volatile *)(MEM_IO + 0x080)))
+#define	REG_SOUNDCNT_H			(*((uint16_t volatile *)(MEM_IO + 0x082)))
+#define	REG_SOUNDCNT_X			(*((uint16_t volatile *)(MEM_IO + 0x084)))
+#define SND_ENABLED				0x0080
 #define SND_OUTPUT_RATIO_25		0x0000
 #define SND_OUTPUT_RATIO_50		0x0001
 #define SND_OUTPUT_RATIO_100	0x0002
@@ -57,9 +56,11 @@
 #define DSB_TIMER1				0x4000
 #define DSB_FIFO_RESET			0x8000
 //DMA channel 1 register definitions
-#define REG_DMA1SAD				*(uint32_t*)0x40000BC // source address
-#define REG_DMA1DAD				*(uint32_t*)0x40000C0 // destination address
-#define REG_DMA1CNT				*(uint32_t*)0x40000C4 // control register
+#define REG_DMA1SAD				*(volatile uint32_t*)(MEM_IO + 0x0bc)
+#define REG_DMA1DAD				*(volatile uint32_t*)(MEM_IO + 0x0c0)
+#define REG_DMA1CNT				*(volatile uint32_t*)(MEM_IO + 0x0c4)
+#define REG_DMA1CNT_L			*(volatile uint16_t*)0x040000C4			// control register
+#define REG_DMA1CNT_H			*(volatile uint16_t*)0x040000C6
 //DMA flags
 #define WORD_DMA				0x04000000
 #define HALF_WORD_DMA			0x00000000
@@ -68,13 +69,19 @@
 #define DMA_REPEAT				0x02000000
 #define DEST_REG_SAME			0x00400000
 //Timer0 register definitions
-#define REG_TM0D				*(uint16_t*)0x4000100
-#define REG_TM0CNT				*(uint16_t*)0x4000102
+#define REG_TM0CNT				*(volatile uint32_t*)(MEM_IO + 0x100)
+#define REG_TM0CNT_L			*(volatile uint16_t*)(MEM_IO + 0x100)
+#define REG_TM0CNT_H			*(volatile uint16_t*)(MEM_IO + 0x102)
+#define REG_TM1CNT				*(volatile uint32_t*)(MEM_IO + 0x104)
+#define REG_TM1CNT_L			*(volatile uint16_t*)(MEM_IO + 0x104)
+#define REG_TM1CNT_H			*(volatile uint16_t*)(MEM_IO + 0x106)
 //Timer flags
 #define TIMER_ENABLED			0x0080
 //FIFO address defines
 #define REG_FIFO_A				0x040000A0
 #define REG_FIFO_B				0x040000A4
+//INT
+#define	REG_IME					*(volatile uint16_t*)(MEM_IO + 0x208)	// Interrupt Master Enable
 
 //M17 stuff
 char msg[64];
@@ -93,7 +100,7 @@ uint16_t num_bytes=0;
 uint8_t enc_bits[SYM_PER_PLD*2];
 uint8_t rf_bits[SYM_PER_PLD*2];
 
-int8_t samples[4*6]; //for a 1kHz tone, fs=24kHz
+uint32_t samples[692]; //for a 1kHz tone, fs=24kHz
 
 //Functions
 //GBA
@@ -204,17 +211,32 @@ int main(void)
 
 	//config sound
 	for(uint8_t i=0; i<24; i++)
-		samples[i]=127*sinf(i/24.0f * 2.0f * M_PI);
+		*((int8_t*)samples+i)=floorf(127.0f*sinf((float)i/24.0f * 2.0f * M_PI));
+	for(uint16_t i=1; i<692/6; i++)
+		memcpy((int8_t*)(&samples[i*6]), (int8_t*)samples, 24);
+	//for(uint16_t i=0; i<692; i++)
+		//samples[i]=0;
+	
+	//are our samples ok? plot a pretty sinewave
+	//for(uint8_t i=0; i<80; i++)
+		//set_pixel(i*3, 90-20.0f*(float)*((int8_t*)samples+i)/127.0f, 0, 255, 0);
+	
+	//REG_SOUNDCNT_L = 0;
+	REG_SOUNDCNT_H = 0x0B0E; //SND_OUTPUT_RATIO_100 | DSA_OUTPUT_RATIO_100 | DSA_OUTPUT_TO_BOTH | DSA_TIMER0 | DSA_FIFO_RESET;	//Channel A, full volume, TIM0
 	REG_SOUNDCNT_X = SND_ENABLED;
-	REG_SOUNDCNT_L = 0;
-	REG_SOUNDCNT_H = SND_OUTPUT_RATIO_100 | DSA_OUTPUT_RATIO_100 | DSA_OUTPUT_TO_BOTH | DSA_TIMER0 | DSA_FIFO_RESET;	//Channel A, full volume, TIM0
-	//Timer0
-	REG_TM0D = SAMP_RATE;
-	REG_TM0CNT = TIMER_ENABLED;
 	// DMA channel 1
 	REG_DMA1SAD = (uint32_t)samples;
-	REG_DMA1DAD = (uint32_t)REG_FIFO_A;
-	REG_DMA1CNT = ENABLE_DMA | START_ON_FIFO_EMPTY | WORD_DMA | DMA_REPEAT | (sizeof(samples)/4);
+	REG_DMA1DAD = REG_FIFO_A;
+	//REG_DMA1CNT_H = 0xB600; //ENABLE_DMA | START_ON_FIFO_EMPTY | WORD_DMA | DMA_REPEAT | DEST_REG_SAME;
+	//Timer1
+	//REG_TM1CNT_L=0x7098; //0xffff-the number of samples to play
+	//REG_TM1CNT_H=0xC4; //enable timer1 + irq and cascade from timer 0
+	//IRQ
+	//REG_IE=0x10; //enable irq for timer 1
+	REG_IME=1; //master enable interrupts
+	//Timer0
+	REG_TM0CNT_L = SAMP_RATE;
+	REG_TM0CNT_H = TIMER_ENABLED;
 
 	//M17 stuff
 	sprintf(msg, "Test message.");
@@ -307,15 +329,18 @@ int main(void)
 		//get current key states (REG_KEY_INPUT stores the states inverted)
 		key_states = ~REG_KEY_INPUT & KEY_ANY;
 
-		/*if(key_states & KEYPAD_LEFT)
-			;
+		if(key_states & KEYPAD_LEFT)
+			put_letter('<', 100, 100, 0xFF, 0xFF, 0xFF);
 		else
-			;
+			put_letter('<', 100, 100, 0, 0, 0); //clear
 
 		if(key_states & KEYPAD_RIGHT)
-			put_letter('>', 10, 10, 0xFF, 0xFF, 0xFF);
+			put_letter('>', 100, 100, 0xFF, 0xFF, 0xFF);
 		else
-			;*/
+			put_letter('>', 100, 100, 0, 0, 0); //clear
+
+		if(key_states & BUTTON_A) //start DMA - start playing samples
+			REG_DMA1CNT_H = 0xB600;
 	}
 
 	return 0;
