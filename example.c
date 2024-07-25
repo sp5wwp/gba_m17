@@ -81,7 +81,10 @@
 #define REG_FIFO_A				0x040000A0
 #define REG_FIFO_B				0x040000A4
 //INT
+#define	REG_IE					*(volatile uint16_t*)(MEM_IO + 0x200)	// Interrupt Enable
+#define REG_IF					*(volatile uint16_t*)(MEM_IO + 0x202)	// Interrupt Flag
 #define	REG_IME					*(volatile uint16_t*)(MEM_IO + 0x208)	// Interrupt Master Enable
+#define REG_INTR_HANDLER		*(volatile uint32_t*)(0x03007FFC)		// Interrupt Handler
 
 //M17 stuff
 char msg[64];
@@ -100,10 +103,20 @@ uint16_t num_bytes=0;
 uint8_t enc_bits[SYM_PER_PLD*2];
 uint8_t rf_bits[SYM_PER_PLD*2];
 
-uint32_t samples[692]; //for a 1kHz tone, fs=24kHz
+uint32_t samples[600]; //int8_t samples, fs=24kHz
 
 //Functions
-//GBA
+//interrupt handler
+void irqh(void)
+{
+	//no more samples, stop timer 0 and dma
+	REG_TM0CNT_H=0; //disable timer 0
+	REG_DMA1CNT_H=0; //stop DMA
+
+	//clear the interrupt(s)
+	REG_IF |= REG_IF;
+}
+
 //form a 16-bit BGR GBA colour from three component values
 uint16_t color(uint8_t r, uint8_t g, uint8_t b)
 {
@@ -210,11 +223,12 @@ int main(void)
 	REG_DISPLAY &= ~FRAME_SEL_BIT;
 
 	//config sound
-	for(uint8_t i=0; i<24; i++)
-		*((int8_t*)samples+i)=floorf(127.0f*sinf((float)i/24.0f * 2.0f * M_PI));
-	for(uint16_t i=1; i<692/6; i++)
-		memcpy((int8_t*)(&samples[i*6]), (int8_t*)samples, 24);
-	//for(uint16_t i=0; i<692; i++)
+	uint8_t cycle=6*4;
+	for(uint8_t i=0; i<cycle; i++)
+		*((int8_t*)samples+i)=floorf(127.0f * sinf((float)i/cycle * 2.0f * M_PI));
+	for(uint16_t i=1; i<sizeof(samples)/4/(cycle/4); i++)
+		memcpy((int8_t*)(&samples[i*(cycle/4)]), (int8_t*)samples, cycle);
+	//for(uint16_t i=0; i<sizeof(samples)/4; i++)
 		//samples[i]=0;
 	
 	//are our samples ok? plot a pretty sinewave
@@ -228,19 +242,20 @@ int main(void)
 	REG_DMA1SAD = (uint32_t)samples;
 	REG_DMA1DAD = REG_FIFO_A;
 	//REG_DMA1CNT_H = 0xB600; //ENABLE_DMA | START_ON_FIFO_EMPTY | WORD_DMA | DMA_REPEAT | DEST_REG_SAME;
+
 	//Timer1
-	//REG_TM1CNT_L=0x7098; //0xffff-the number of samples to play
-	//REG_TM1CNT_H=0xC4; //enable timer1 + irq and cascade from timer 0
+	REG_TM1CNT_L=0xFFFF-sizeof(samples)+1; //0xffff-the number of samples to play
+	REG_TM1CNT_H=0xC4; //enable timer 1 + irq and cascade from timer 0
 	//IRQ
-	//REG_IE=0x10; //enable irq for timer 1
+	REG_INTR_HANDLER=(uint32_t)&irqh; //pointer to the interrupt handler function
+	REG_IE=0x10; //enable irq for timer 1
 	REG_IME=1; //master enable interrupts
-	//Timer0
+	//Timer0 - sample rate
 	REG_TM0CNT_L = SAMP_RATE;
-	REG_TM0CNT_H = TIMER_ENABLED;
 
 	//M17 stuff
 	sprintf(msg, "Test message.");
-	sprintf(src_raw, "SP5WWP");
+	sprintf((char*)src_raw, "SP5WWP");
 	str_print(0, 0*9, 255, 255, 255, "GBA"); str_print(20, 0*9, 255, 255, 255, "M"); str_print(25, 0*9, 255, 0, 0, "17"); str_print(35, 0*9, 255, 255, 255, " Packet Encoder by SP5WWP");
 	str_print(0, 2*9, 255, 255, 255, "DST: %s", dst_raw); //doesn't work without "-specs=nosys.specs"
 	str_print(0, 3*9, 255, 255, 255, "SRC: %s", src_raw);
@@ -312,8 +327,8 @@ int main(void)
 	;
 
 	//send EOT
-    for(uint8_t i=0; i<SYM_PER_FRA/SYM_PER_SWD; i++) //192/8=24
-        fill_syncword(full_packet, &pkt_sym_cnt, EOT_MRKR);
+	for(uint8_t i=0; i<SYM_PER_FRA/SYM_PER_SWD; i++) //192/8=24
+		fill_syncword(full_packet, &pkt_sym_cnt, EOT_MRKR);
 
 	str_print(0, 6*9, 255, 255, 255, "LSF_CRC=%04X PKT_CRC=%04X", lsf_crc, packet_crc);
 	str_print(0, SCREEN_HEIGHT-1*9+1, 255, 255, 255, "Press A to transmit.");
@@ -340,7 +355,10 @@ int main(void)
 			put_letter('>', 100, 100, 0, 0, 0); //clear
 
 		if(key_states & BUTTON_A) //start DMA - start playing samples
-			REG_DMA1CNT_H = 0xB600;
+		{
+			REG_TM0CNT_H = TIMER_ENABLED; //enable timer 0 - sample rate generator
+			REG_DMA1CNT_H = 0xB600; //start DMA transfers
+		}
 	}
 
 	return 0;

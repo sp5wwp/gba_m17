@@ -1,4 +1,7 @@
 # gba_m17
 
 ## Disclaimer
-This is just a side-project created for fun. The Direct Audio part **does not work yet** and for some reason I can't fix it.
+This is a side-project created *only* for fun.
+
+## Usage
+Press the **A** button. The code should generate 100ms of a 1kHz tone. That's all so far.

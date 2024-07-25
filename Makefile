@@ -1,6 +1,6 @@
 FILES = example.c ./libm17/decode/*.c ./libm17/encode/*.c ./libm17/math/*.c ./libm17/payload/*.c ./libm17/phy/*.c
 OPTS = -ffunction-sections -fdata-sections -Wall -Wextra -Wl,--gc-sections -Os
-OPTS_ADD = -mcpu=arm7tdmi -nostartfiles -Tlnkscript -specs=nano.specs #-specs=nosys.specs
+OPTS_ADD = -mcpu=arm7tdmi -nostartfiles -Tlnkscript -specs=nano.specs -specs=nosys.specs
 LIBS = -lm
 
 all: example.c
@@ -10,7 +10,7 @@ all: example.c
 	rm out out.gba
 
 test:
-	mgba -2 out_fixed.gba
+	mgba-qt -2 out_fixed.gba
 
 clean:
 	rm out_fixed.gba
