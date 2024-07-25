@@ -241,7 +241,7 @@ int main(void)
 	// DMA channel 1
 	REG_DMA1SAD = (uint32_t)samples;
 	REG_DMA1DAD = REG_FIFO_A;
-	//REG_DMA1CNT_H = 0xB600; //ENABLE_DMA | START_ON_FIFO_EMPTY | WORD_DMA | DMA_REPEAT | DEST_REG_SAME;
+	//REG_DMA1CNT_H = 0xB600; //REG_DMA1CNT = ENABLE_DMA | START_ON_FIFO_EMPTY | WORD_DMA | DMA_REPEAT | DEST_REG_SAME;
 
 	//Timer1
 	REG_TM1CNT_L=0xFFFF-sizeof(samples)+1; //0xffff-the number of samples to play
