@@ -93,17 +93,21 @@ uint8_t dst_raw[10]={'A', 'L', 'L', '\0'};                  //raw, unencoded des
 uint8_t src_raw[10]={'N', '0', 'C', 'A', 'L', 'L', '\0'};
 uint8_t can=0;
 
-struct LSF lsf;
+lsf_t lsf;
 
 float full_packet[6912+88];
 uint8_t full_packet_data[32*25];
-uint16_t pkt_sym_cnt=0;
+uint32_t pkt_sym_cnt=0;
 uint16_t num_bytes=0;
 
 uint8_t enc_bits[SYM_PER_PLD*2];
 uint8_t rf_bits[SYM_PER_PLD*2];
 
+//audio playback
 uint32_t samples[600]; //int8_t samples, fs=24kHz
+
+//key press detection
+volatile uint32_t key_states=0;
 
 //Functions
 //interrupt handler
@@ -165,55 +169,6 @@ void str_print(const uint16_t x, const uint16_t y, const uint8_t r, const uint8_
 	va_end(ap);
 
 	put_string(str, x, y, r, g, b);
-}
-
-//M17-related
-//type - 0 - preamble before LSF (standard)
-//type - 1 - preamble before BERT transmission
-void fill_preamble(float* out, const uint8_t type)
-{
-    if(type) //pre-BERT
-    {
-        for(uint16_t i=0; i<SYM_PER_FRA/2; i++) //40ms * 4800 = 192
-        {
-            out[2*i]  =-3.0;
-            out[2*i+1]=+3.0;
-        }
-    }
-    else //pre-LSF
-    {
-        for(uint16_t i=0; i<SYM_PER_FRA/2; i++) //40ms * 4800 = 192
-        {
-            out[2*i]  =+3.0;
-            out[2*i+1]=-3.0;
-        }
-    }
-}
-
-//fill with syncword symbols
-void fill_syncword(float* out, uint16_t* cnt, const uint16_t syncword)
-{
-    float symb=0.0f;
-
-    for(uint8_t i=0; i<16; i+=2)
-    {
-        symb=symbol_map[(syncword>>(14-i))&3];
-        out[*cnt]=symb;
-        (*cnt)++;
-    }
-}
-
-//fill packet symbols array with data (can be used for both LSF and frames)
-void fill_data(float* out, uint16_t* cnt, const uint8_t* in)
-{
-	float symb=0.0f;
-
-	for(uint16_t i=0; i<SYM_PER_PLD; i++) //40ms * 4800 - 8 (syncword)
-	{
-		symb=symbol_map[in[2*i]*2+in[2*i+1]];
-		out[*cnt]=symb;
-		(*cnt)++;
-	}
 }
 
 int main(void)
@@ -298,11 +253,10 @@ int main(void)
 
 	//fill preamble
 	memset((uint8_t*)full_packet, 0, sizeof(float)*(6912+88));
-	fill_preamble(full_packet, 0);
-	pkt_sym_cnt=SYM_PER_FRA;
+	send_preamble(full_packet, &pkt_sym_cnt, PREAM_LSF);
 
 	//send LSF syncword
-	fill_syncword(full_packet, &pkt_sym_cnt, SYNC_LSF);
+	send_syncword(full_packet, &pkt_sym_cnt, SYNC_LSF);
 
 	//reorder bits
 	for(uint16_t i=0; i<SYM_PER_PLD*2; i++)
@@ -321,30 +275,28 @@ int main(void)
 	}
 
 	//fill packet with LSF
-	fill_data(full_packet, &pkt_sym_cnt, rf_bits);
+	send_data(full_packet, &pkt_sym_cnt, rf_bits);
 
 	//generate frames
 	;
 
 	//send EOT
 	for(uint8_t i=0; i<SYM_PER_FRA/SYM_PER_SWD; i++) //192/8=24
-		fill_syncword(full_packet, &pkt_sym_cnt, EOT_MRKR);
+		send_syncword(full_packet, &pkt_sym_cnt, EOT_MRKR);
 
 	str_print(0, 6*9, 255, 255, 255, "LSF_CRC=%04X PKT_CRC=%04X", lsf_crc, packet_crc);
 	str_print(0, SCREEN_HEIGHT-1*9+1, 255, 255, 255, "Press A to transmit.");
 
-	uint32_t key_states = 0;
-
 	while(1)
 	{
 		//skip past the rest of any current V-blank, then skip past the V-draw
-		while(REG_DISPLAY_VCOUNT >= SCREEN_HEIGHT);
-		while(REG_DISPLAY_VCOUNT <  SCREEN_HEIGHT);
+		//while(REG_DISPLAY_VCOUNT >= SCREEN_HEIGHT);
+		//while(REG_DISPLAY_VCOUNT <  SCREEN_HEIGHT);
 
 		//get current key states (REG_KEY_INPUT stores the states inverted)
 		key_states = ~REG_KEY_INPUT & KEY_ANY;
 
-		if(key_states & KEYPAD_LEFT)
+		/*if(key_states & KEYPAD_LEFT)
 			put_letter('<', 100, 100, 0xFF, 0xFF, 0xFF);
 		else
 			put_letter('<', 100, 100, 0, 0, 0); //clear
@@ -353,7 +305,7 @@ int main(void)
 			put_letter('>', 100, 100, 0xFF, 0xFF, 0xFF);
 		else
 			put_letter('>', 100, 100, 0, 0, 0); //clear
-
+		*/
 		if(key_states & BUTTON_A) //start DMA - start playing samples
 		{
 			REG_TM0CNT_H = TIMER_ENABLED; //enable timer 0 - sample rate generator
