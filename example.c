@@ -89,14 +89,14 @@
 //M17 stuff
 char msg[64];
 
-uint8_t dst_raw[10]={'A', 'L', 'L', '\0'};                  //raw, unencoded destination address
-uint8_t src_raw[10]={'N', '0', 'C', 'A', 'L', 'L', '\0'};
+char dst_raw[10]="ALL";			//raw, unencoded destination address (default)
+char src_raw[10]="N0CALL";		//raw, unencoded source address (default)
 uint8_t can=0;
 
 lsf_t lsf;
 
-float full_packet[6912+88];
-uint8_t full_packet_data[32*25];
+float full_packet[6800]={0.0f};
+uint8_t full_packet_data[32*25]={0};
 uint32_t pkt_sym_cnt=0;
 uint16_t num_bytes=0;
 
@@ -105,6 +105,7 @@ uint8_t rf_bits[SYM_PER_PLD*2];
 
 //audio playback
 uint32_t samples[600]; //int8_t samples, fs=24kHz
+volatile uint8_t play_cnt=0;
 
 //key press detection
 volatile uint32_t key_states=0;
@@ -113,9 +114,21 @@ volatile uint32_t key_states=0;
 //interrupt handler
 void irqh(void)
 {
-	//no more samples, stop timer 0 and dma
-	REG_TM0CNT_H=0; //disable timer 0
-	REG_DMA1CNT_H=0; //stop DMA
+	play_cnt++;
+
+	if(play_cnt==50)
+	{
+		//no more samples, stop timer 0 and dma
+		REG_TM0CNT_H=0; //disable timer 0
+		REG_DMA1CNT_H=0; //stop DMA
+	}
+	else
+	{
+		REG_DMA1CNT_H=0; //stop DMA
+		REG_DMA1SAD = (uint32_t)samples;
+		REG_TM1CNT_L=0xFFFF-sizeof(samples)/2+1;
+		REG_DMA1CNT_H = 0xB600; //start DMA transfers
+	}
 
 	//clear the interrupt(s)
 	REG_IF |= REG_IF;
@@ -159,6 +172,7 @@ void put_string(const char *str, uint16_t x, uint16_t y, uint8_t r, uint8_t g, u
 	}
 }
 
+//doesn't work without "-specs=nosys.specs"
 void str_print(const uint16_t x, const uint16_t y, const uint8_t r, const uint8_t g, const uint8_t b, const char* fmt, ...)
 {
 	char str[50];
@@ -176,6 +190,9 @@ int main(void)
 	//config display
 	REG_DISPLAY = 3 | BG2_ENABLE;
 	REG_DISPLAY &= ~FRAME_SEL_BIT;
+
+	//info header
+	str_print(0, 0*9, 255, 255, 255, "GBA"); str_print(20, 0*9, 255, 255, 255, "M"); str_print(25, 0*9, 255, 0, 0, "17"); str_print(35, 0*9, 255, 255, 255, " Packet Encoder by SP5WWP");
 
 	//config sound
 	uint8_t cycle=6*4;
@@ -198,25 +215,21 @@ int main(void)
 	REG_DMA1DAD = REG_FIFO_A;
 	//REG_DMA1CNT_H = 0xB600; //REG_DMA1CNT = ENABLE_DMA | START_ON_FIFO_EMPTY | WORD_DMA | DMA_REPEAT | DEST_REG_SAME;
 
-	//Timer1
-	REG_TM1CNT_L=0xFFFF-sizeof(samples)+1; //0xffff-the number of samples to play
-	REG_TM1CNT_H=0xC4; //enable timer 1 + irq and cascade from timer 0
+	//Timer0 - sample rate
+	REG_TM0CNT_L = SAMP_RATE;
+
 	//IRQ
 	REG_INTR_HANDLER=(uint32_t)&irqh; //pointer to the interrupt handler function
 	REG_IE=0x10; //enable irq for timer 1
 	REG_IME=1; //master enable interrupts
-	//Timer0 - sample rate
-	REG_TM0CNT_L = SAMP_RATE;
 
 	//M17 stuff
 	sprintf(msg, "Test message.");
-	sprintf((char*)src_raw, "SP5WWP");
-	str_print(0, 0*9, 255, 255, 255, "GBA"); str_print(20, 0*9, 255, 255, 255, "M"); str_print(25, 0*9, 255, 0, 0, "17"); str_print(35, 0*9, 255, 255, 255, " Packet Encoder by SP5WWP");
-	str_print(0, 2*9, 255, 255, 255, "DST: %s", dst_raw); //doesn't work without "-specs=nosys.specs"
-	str_print(0, 3*9, 255, 255, 255, "SRC: %s", src_raw);
-	str_print(0, 4*9, 255, 255, 255, "Message: %s", msg);
+	sprintf(dst_raw, "ALL");
+	sprintf(src_raw, "N0CALL");
+
 	//obtain data and append with CRC
-	memset(full_packet_data, 0, 32*25);
+	//memset(full_packet_data, 0, 32*25);
 	full_packet_data[0]=0x05;
 	num_bytes=sprintf((char*)&full_packet_data[1], msg)+2; //0x05 and 0x00
 	uint16_t packet_crc=CRC_M17(full_packet_data, num_bytes);
@@ -225,18 +238,16 @@ int main(void)
 	num_bytes+=2; //count 2-byte CRC too
 
 	//encode dst, src for the lsf struct
-	uint64_t dst_encoded=0, src_encoded=0;
+	uint64_t dst_enc=0, src_enc=0;
 	uint16_t type=0;
-	encode_callsign_value(&dst_encoded, dst_raw);
-	encode_callsign_value(&src_encoded, src_raw);
+	encode_callsign_value(&dst_enc, (uint8_t*)dst_raw);
+	encode_callsign_value(&src_enc, (uint8_t*)src_raw);
 	for(int8_t i=5; i>=0; i--)
 	{
-		lsf.dst[5-i]=(dst_encoded>>(i*8))&0xFF;
-		lsf.src[5-i]=(src_encoded>>(i*8))&0xFF;
+		lsf.dst[5-i]=(dst_enc>>(i*8))&0xFF;
+		lsf.src[5-i]=(src_enc>>(i*8))&0xFF;
 	}
-
-	//fprintf(stderr, "DST: %s\t%012lX\nSRC: %s\t%012lX\n", dst_raw, dst_encoded, src_raw, src_encoded);
-	//fprintf(stderr, "Data CRC:\t%04hX\n", packet_crc);
+	
 	type=((uint16_t)0x01<<1)|((uint16_t)can<<7); //packet mode, content: data
 	lsf.type[0]=(uint16_t)type>>8;
 	lsf.type[1]=(uint16_t)type&0xFF;
@@ -246,33 +257,22 @@ int main(void)
 	uint16_t lsf_crc=LSF_CRC(&lsf);
 	lsf.crc[0]=lsf_crc>>8;
 	lsf.crc[1]=lsf_crc&0xFF;
-	//fprintf(stderr, "LSF CRC:\t%04hX\n", lsf_crc);
 
 	//encode LSF data
 	conv_encode_LSF(enc_bits, &lsf);
 
 	//fill preamble
-	memset((uint8_t*)full_packet, 0, sizeof(float)*(6912+88));
+	memset((uint8_t*)full_packet, 0, sizeof(full_packet));
 	send_preamble(full_packet, &pkt_sym_cnt, PREAM_LSF);
 
 	//send LSF syncword
 	send_syncword(full_packet, &pkt_sym_cnt, SYNC_LSF);
 
 	//reorder bits
-	for(uint16_t i=0; i<SYM_PER_PLD*2; i++)
-		rf_bits[i]=enc_bits[intrl_seq[i]];
+	reorder_bits(rf_bits, enc_bits);
 
 	//randomize
-	for(uint16_t i=0; i<SYM_PER_PLD*2; i++)
-	{
-		if((rand_seq[i/8]>>(7-(i%8)))&1) //flip bit if '1'
-		{
-			if(rf_bits[i])
-				rf_bits[i]=0;
-			else
-				rf_bits[i]=1;
-		}
-	}
+	randomize_bits(rf_bits);
 
 	//fill packet with LSF
 	send_data(full_packet, &pkt_sym_cnt, rf_bits);
@@ -281,17 +281,20 @@ int main(void)
 	;
 
 	//send EOT
-	for(uint8_t i=0; i<SYM_PER_FRA/SYM_PER_SWD; i++) //192/8=24
-		send_syncword(full_packet, &pkt_sym_cnt, EOT_MRKR);
+	send_eot(full_packet, &pkt_sym_cnt);
 
+	//display params
+	str_print(0, 2*9, 255, 255, 255, "DST: %s", dst_raw); str_print(15*6, 2*9, 255, 255, 255, "(%04X", dst_enc>>32); str_print(15*6, 2*9, 255, 255, 255, "%13X)", dst_enc);
+	str_print(0, 3*9, 255, 255, 255, "SRC: %s", src_raw); str_print(15*6, 3*9, 255, 255, 255, "(%04X", src_enc>>32); str_print(15*6, 3*9, 255, 255, 255, "%13X)", src_enc);
+	str_print(0, 4*9, 255, 255, 255, "Message: %s", msg);
 	str_print(0, 6*9, 255, 255, 255, "LSF_CRC=%04X PKT_CRC=%04X", lsf_crc, packet_crc);
 	str_print(0, SCREEN_HEIGHT-1*9+1, 255, 255, 255, "Press A to transmit.");
 
 	while(1)
 	{
 		//skip past the rest of any current V-blank, then skip past the V-draw
-		//while(REG_DISPLAY_VCOUNT >= SCREEN_HEIGHT);
-		//while(REG_DISPLAY_VCOUNT <  SCREEN_HEIGHT);
+		while(REG_DISPLAY_VCOUNT >= SCREEN_HEIGHT);
+		while(REG_DISPLAY_VCOUNT <  SCREEN_HEIGHT);
 
 		//get current key states (REG_KEY_INPUT stores the states inverted)
 		key_states = ~REG_KEY_INPUT & KEY_ANY;
@@ -308,8 +311,11 @@ int main(void)
 		*/
 		if(key_states & BUTTON_A) //start DMA - start playing samples
 		{
-			REG_TM0CNT_H = TIMER_ENABLED; //enable timer 0 - sample rate generator
+			play_cnt=0;
 			REG_DMA1CNT_H = 0xB600; //start DMA transfers
+			REG_TM1CNT_L=0xFFFF-sizeof(samples)/2+1; //0xffff-(the number of samples to play)+1
+			REG_TM0CNT_H = TIMER_ENABLED; //enable timer 0 - sample rate generator
+			REG_TM1CNT_H=0xC4; //enable timer 1 + irq and cascade from timer 0
 		}
 	}
 
