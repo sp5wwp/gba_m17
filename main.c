@@ -108,7 +108,7 @@ int main(void)
 	config_display();
 
 	//info header
-	str_print(0, 0*9, 255, 255, 255, "GBA"); str_print(20, 0*9, 255, 255, 255, "M"); str_print(25, 0*9, 255, 0, 0, "17"); str_print(35, 0*9, 255, 255, 255, " Packet Encoder by SP5WWP");
+	str_print(0, 0*9, 255, 255, 255, "GBA"); str_print(4*6, 0*9, 255, 255, 255, "M"); str_print(5*6, 0*9, 255, 0, 0, "17"); str_print(8*6, 0*9, 255, 255, 255, "Packet Encoder by SP5WWP");
 
 	//generate sample
 	uint8_t cycle=6*4; //at 24kHz sample rate, 24 -> 1kHz
@@ -122,18 +122,6 @@ int main(void)
 	//are our samples ok? plot a pretty sinewave
 	//for(uint8_t i=0; i<80; i++)
 		//set_pixel(i*3, 90-20.0f*(float)*((int8_t*)samples+i/*+(sizeof(samples)/4-80)*/)/127.0f, 0, 255, 0);
-	
-	//config sound
-	//REG_SOUNDCNT_L = 0; //unused
-	REG_SOUNDCNT_H = 0x0B0E; //SND_OUTPUT_RATIO_100 | DSA_OUTPUT_RATIO_100 | DSA_OUTPUT_TO_BOTH | DSA_TIMER0 | DSA_FIFO_RESET;	//Channel A, full volume, TIM0
-	REG_SOUNDCNT_X = SND_ENABLED;
-	// DMA channel 1
-	REG_DMA1SAD = (uint32_t)samples;
-	REG_DMA1DAD = REG_FIFO_A;
-	//REG_DMA1CNT_H = 0xB600; //REG_DMA1CNT = ENABLE_DMA | START_ON_FIFO_EMPTY | WORD_DMA | DMA_REPEAT | DEST_REG_SAME;
-
-	//Timer0 - sample rate
-	REG_TM0CNT_L = SAMP_RATE;
 
 	//IRQ
 	REG_INTR_HANDLER=(uint32_t)&irqh; //pointer to the interrupt handler function
@@ -227,16 +215,20 @@ int main(void)
 		*/
 		if(key_states & BUTTON_A) //start playing samples
 		{
-			/*REG_SOUNDCNT_H = 0x0B0E;
-			REG_SOUNDCNT_X = SND_ENABLED;
-			REG_DMA1SAD = (uint32_t)samples;
-			REG_DMA1DAD = REG_FIFO_A;*/
-			REG_IE = TIM1; //enable irq for timer 1
-			REG_DMA1CNT_H = 0xB600; //start DMA transfers
-			REG_TM1CNT_L = 0xFFFF-sizeof(samples)+3; //0xffff-(the number of samples to play)+1
-			REG_TM1CNT_H = 0x00C4; //enable timer 1 + irq and cascade from timer 0
-			REG_TM0CNT_L = SAMP_RATE;
-			REG_TM0CNT_H = TIMER_ENABLED; //enable timer 0 - sample rate generator
+			if(!(REG_TM0CNT_H & TIMER_ENABLED)) //not playing samples?
+			{
+				REG_SOUNDCNT_H = 0; //clear the control register
+				REG_SOUNDCNT_H = 0x0B0E; //clear FIFO A //SND_OUTPUT_RATIO_100 | DSA_OUTPUT_RATIO_100 | DSA_OUTPUT_TO_BOTH | DSA_TIMER0 | DSA_FIFO_RESET; //Channel A, full volume, TIM0
+				REG_SOUNDCNT_X = SND_ENABLED; //enable direct sound
+				REG_DMA1SAD = (uint32_t)samples; //DMA source
+				REG_DMA1DAD = REG_FIFO_A; //DMA destination - FIFO A
+				REG_IE = TIM1; //enable irq for timer 1
+				REG_DMA1CNT_H = 0xB600; //start DMA transfers //REG_DMA1CNT = ENABLE_DMA | START_ON_FIFO_EMPTY | WORD_DMA | DMA_REPEAT;
+				REG_TM1CNT_L = 0xFFFF-sizeof(samples)+1; //0xffff-(the number of samples to play)+1
+				REG_TM1CNT_H = 0x00C4; //enable timer 1 + irq and cascade from timer 0
+				REG_TM0CNT_L = SAMP_RATE; //set timer 0 to sample rate
+				REG_TM0CNT_H = TIMER_ENABLED; //enable timer 0 - sample rate generator
+			}
 		}
 	}
 
