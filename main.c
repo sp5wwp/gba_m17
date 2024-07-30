@@ -4,87 +4,8 @@
 #include <stdarg.h>
 #include <math.h>
 #include <m17.h>
+#include "gba.h"
 #include "fonts.h"
-
-#define SCREEN_WIDTH			240
-#define SCREEN_HEIGHT			160
-
-#define MEM_IO					0x04000000
-#define MEM_VRAM				((volatile uint16_t *)0x06000000)
-
-#define REG_DISPLAY				(*((volatile uint32_t *)(MEM_IO)))
-#define REG_DISPLAY_VCOUNT		(*((volatile uint32_t *)(MEM_IO + 0x0006)))
-#define REG_KEY_INPUT			(*((volatile uint32_t *)(MEM_IO + 0x0130)))
-
-#define FRAME_SEL_BIT			0x0010
-#define BG2_ENABLE				0x0400
-
-#define BUTTON_A				0x0001      // A Button
-#define BUTTON_B				0x0002      // B Button
-#define BUTTON_SELECT			0x0004      // select button
-#define BUTTON_START			0x0008      // START button
-#define KEYPAD_RIGHT			0x0010      // Right key
-#define KEYPAD_LEFT				0x0020      // Left key
-#define KEYPAD_UP				0x0040      // Up key
-#define KEYPAD_DOWN				0x0080      // Down key
-#define BUTTON_RIGHT			0x0100      // R shoulder Button
-#define BUTTON_LEFT				0x0200		// L shoulder Button
-#define KEY_ANY					0x03FF
-
-#define SAMP_RATE				(0xFFFF-699+1)			// 2^24/699 = 24,000 Hz
-#define	REG_SOUNDCNT_L			(*((uint16_t volatile *)(MEM_IO + 0x080)))
-#define	REG_SOUNDCNT_H			(*((uint16_t volatile *)(MEM_IO + 0x082)))
-#define	REG_SOUNDCNT_X			(*((uint16_t volatile *)(MEM_IO + 0x084)))
-#define SND_ENABLED				0x0080
-#define SND_OUTPUT_RATIO_25		0x0000
-#define SND_OUTPUT_RATIO_50		0x0001
-#define SND_OUTPUT_RATIO_100	0x0002
-#define DSA_OUTPUT_RATIO_50		0x0000
-#define DSA_OUTPUT_RATIO_100	0x0004
-#define DSA_OUTPUT_TO_RIGHT		0x0100
-#define DSA_OUTPUT_TO_LEFT		0x0200
-#define DSA_OUTPUT_TO_BOTH		0x0300
-#define DSA_TIMER0				0x0000
-#define DSA_TIMER1				0x0400
-#define DSA_FIFO_RESET			0x0800
-#define DSB_OUTPUT_RATIO_50		0x0000
-#define DSB_OUTPUT_RATIO_100	0x0008
-#define DSB_OUTPUT_TO_RIGHT		0x1000
-#define DSB_OUTPUT_TO_LEFT		0x2000
-#define DSB_OUTPUT_TO_BOTH		0x3000
-#define DSB_TIMER0				0x0000
-#define DSB_TIMER1				0x4000
-#define DSB_FIFO_RESET			0x8000
-//DMA channel 1 register definitions
-#define REG_DMA1SAD				*(volatile uint32_t*)(MEM_IO + 0x0bc)
-#define REG_DMA1DAD				*(volatile uint32_t*)(MEM_IO + 0x0c0)
-#define REG_DMA1CNT				*(volatile uint32_t*)(MEM_IO + 0x0c4)
-#define REG_DMA1CNT_L			*(volatile uint16_t*)0x040000C4			// control register
-#define REG_DMA1CNT_H			*(volatile uint16_t*)0x040000C6
-//DMA flags
-#define WORD_DMA				0x04000000
-#define HALF_WORD_DMA			0x00000000
-#define ENABLE_DMA				0x80000000
-#define START_ON_FIFO_EMPTY		0x30000000
-#define DMA_REPEAT				0x02000000
-#define DEST_REG_SAME			0x00400000
-//Timer0 register definitions
-#define REG_TM0CNT				*(volatile uint32_t*)(MEM_IO + 0x100)
-#define REG_TM0CNT_L			*(volatile uint16_t*)(MEM_IO + 0x100)
-#define REG_TM0CNT_H			*(volatile uint16_t*)(MEM_IO + 0x102)
-#define REG_TM1CNT				*(volatile uint32_t*)(MEM_IO + 0x104)
-#define REG_TM1CNT_L			*(volatile uint16_t*)(MEM_IO + 0x104)
-#define REG_TM1CNT_H			*(volatile uint16_t*)(MEM_IO + 0x106)
-//Timer flags
-#define TIMER_ENABLED			0x0080
-//FIFO address defines
-#define REG_FIFO_A				0x040000A0
-#define REG_FIFO_B				0x040000A4
-//INT
-#define	REG_IE					*(volatile uint16_t*)(MEM_IO + 0x200)	// Interrupt Enable
-#define REG_IF					*(volatile uint16_t*)(MEM_IO + 0x202)	// Interrupt Flag
-#define	REG_IME					*(volatile uint16_t*)(MEM_IO + 0x208)	// Interrupt Master Enable
-#define REG_INTR_HANDLER		*(volatile uint32_t*)(0x03007FFC)		// Interrupt Handler
 
 //M17 stuff
 char msg[64];
@@ -104,34 +25,17 @@ uint8_t enc_bits[SYM_PER_PLD*2];
 uint8_t rf_bits[SYM_PER_PLD*2];
 
 //audio playback
-uint32_t samples[600]; //int8_t samples, fs=24kHz
-volatile uint8_t play_cnt=0;
+uint32_t samples[241]; //int8_t samples, fs=24kHz
 
 //key press detection
 volatile uint32_t key_states=0;
 
 //Functions
-//interrupt handler
-void irqh(void)
+//low-level, hardware
+void config_display(void)
 {
-	play_cnt++;
-
-	if(play_cnt==50)
-	{
-		//no more samples, stop timer 0 and dma
-		REG_TM0CNT_H=0; //disable timer 0
-		REG_DMA1CNT_H=0; //stop DMA
-	}
-	else
-	{
-		REG_DMA1CNT_H=0; //stop DMA
-		REG_DMA1SAD = (uint32_t)samples;
-		REG_TM1CNT_L=0xFFFF-sizeof(samples)/2+1;
-		REG_DMA1CNT_H = 0xB600; //start DMA transfers
-	}
-
-	//clear the interrupt(s)
-	REG_IF |= REG_IF;
+	REG_DISPLAY = 3 | BG2_ENABLE;
+	REG_DISPLAY &= ~FRAME_SEL_BIT;
 }
 
 //form a 16-bit BGR GBA colour from three component values
@@ -185,17 +89,29 @@ void str_print(const uint16_t x, const uint16_t y, const uint8_t r, const uint8_
 	put_string(str, x, y, r, g, b);
 }
 
+//interrupt handler
+void irqh(void)
+{
+	//no more samples, stop dma and timer 0, 1
+	REG_DMA1CNT_H = 0; //stop DMA
+	REG_TM0CNT_H = 0; //disable timer 0
+	REG_TM1CNT_H = 0; //disable timer 1
+	REG_IE = 0; //disable IRQs
+
+	//clear the interrupt(s)
+	REG_IF |= REG_IF;
+}
+
 int main(void)
 {
 	//config display
-	REG_DISPLAY = 3 | BG2_ENABLE;
-	REG_DISPLAY &= ~FRAME_SEL_BIT;
+	config_display();
 
 	//info header
 	str_print(0, 0*9, 255, 255, 255, "GBA"); str_print(20, 0*9, 255, 255, 255, "M"); str_print(25, 0*9, 255, 0, 0, "17"); str_print(35, 0*9, 255, 255, 255, " Packet Encoder by SP5WWP");
 
-	//config sound
-	uint8_t cycle=6*4;
+	//generate sample
+	uint8_t cycle=6*4; //at 24kHz sample rate, 24 -> 1kHz
 	for(uint8_t i=0; i<cycle; i++)
 		*((int8_t*)samples+i)=floorf(127.0f * sinf((float)i/cycle * 2.0f * M_PI));
 	for(uint16_t i=1; i<sizeof(samples)/4/(cycle/4); i++)
@@ -205,9 +121,10 @@ int main(void)
 	
 	//are our samples ok? plot a pretty sinewave
 	//for(uint8_t i=0; i<80; i++)
-		//set_pixel(i*3, 90-20.0f*(float)*((int8_t*)samples+i)/127.0f, 0, 255, 0);
+		//set_pixel(i*3, 90-20.0f*(float)*((int8_t*)samples+i/*+(sizeof(samples)/4-80)*/)/127.0f, 0, 255, 0);
 	
-	//REG_SOUNDCNT_L = 0;
+	//config sound
+	//REG_SOUNDCNT_L = 0; //unused
 	REG_SOUNDCNT_H = 0x0B0E; //SND_OUTPUT_RATIO_100 | DSA_OUTPUT_RATIO_100 | DSA_OUTPUT_TO_BOTH | DSA_TIMER0 | DSA_FIFO_RESET;	//Channel A, full volume, TIM0
 	REG_SOUNDCNT_X = SND_ENABLED;
 	// DMA channel 1
@@ -220,7 +137,6 @@ int main(void)
 
 	//IRQ
 	REG_INTR_HANDLER=(uint32_t)&irqh; //pointer to the interrupt handler function
-	REG_IE=0x10; //enable irq for timer 1
 	REG_IME=1; //master enable interrupts
 
 	//M17 stuff
@@ -309,13 +225,18 @@ int main(void)
 		else
 			put_letter('>', 100, 100, 0, 0, 0); //clear
 		*/
-		if(key_states & BUTTON_A) //start DMA - start playing samples
+		if(key_states & BUTTON_A) //start playing samples
 		{
-			play_cnt=0;
+			/*REG_SOUNDCNT_H = 0x0B0E;
+			REG_SOUNDCNT_X = SND_ENABLED;
+			REG_DMA1SAD = (uint32_t)samples;
+			REG_DMA1DAD = REG_FIFO_A;*/
+			REG_IE = TIM1; //enable irq for timer 1
 			REG_DMA1CNT_H = 0xB600; //start DMA transfers
-			REG_TM1CNT_L=0xFFFF-sizeof(samples)/2+1; //0xffff-(the number of samples to play)+1
+			REG_TM1CNT_L = 0xFFFF-sizeof(samples)+3; //0xffff-(the number of samples to play)+1
+			REG_TM1CNT_H = 0x00C4; //enable timer 1 + irq and cascade from timer 0
+			REG_TM0CNT_L = SAMP_RATE;
 			REG_TM0CNT_H = TIMER_ENABLED; //enable timer 0 - sample rate generator
-			REG_TM1CNT_H=0xC4; //enable timer 1 + irq and cascade from timer 0
 		}
 	}
 
