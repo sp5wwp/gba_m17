@@ -59,7 +59,7 @@ void put_letter(const char c, uint16_t x, uint16_t y, uint8_t r, uint8_t g, uint
 	{
 		for(uint8_t j=0; j<5; j++)
 		{
-			if(font_5_8[(uint8_t)c-0x20][j]&(1<<i))
+			if(font_5_8[(uint8_t)c-' '][j]&(1<<i) || c==127)
 				set_pixel(x+j, y+i, r, g, b);
 			//else
 				//set_pixel(x+j, y+i, 0, 0, 0);
@@ -203,16 +203,13 @@ int main(void)
 		//get current key states (REG_KEY_INPUT stores the states inverted)
 		key_states = ~REG_KEY_INPUT & KEY_ANY;
 
-		/*if(key_states & KEYPAD_LEFT)
+		if(key_states & KEYPAD_LEFT)
 			put_letter('<', 100, 100, 0xFF, 0xFF, 0xFF);
-		else
-			put_letter('<', 100, 100, 0, 0, 0); //clear
-
-		if(key_states & KEYPAD_RIGHT)
+		else if(key_states & KEYPAD_RIGHT)
 			put_letter('>', 100, 100, 0xFF, 0xFF, 0xFF);
 		else
-			put_letter('>', 100, 100, 0, 0, 0); //clear
-		*/
+			put_letter(127, 100, 100, 0, 0, 0); //clear
+		
 		if(key_states & BUTTON_A) //start playing samples
 		{
 			if(!(REG_TM0CNT_H & TIMER_ENABLED)) //not playing samples?
