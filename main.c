@@ -122,7 +122,7 @@ void irqh(void)
 	REG_TM0CNT_H = 0; //disable timer 0
 	REG_TM1CNT_H = 0; //disable timer 1
 
-	//clear the interrupt(s)
+	//clear the interrupt(s) by acknowledging them
 	REG_IF |= REG_IF;
 }
 
@@ -180,8 +180,10 @@ int main(void)
 	//fill preamble
 	send_preamble_i(symbols, &pkt_sym_cnt);
 
-	int8_t last[41]; memset(last, 0, sizeof(last));
-	float acc=0.0f;
+	//baseband upsampling and filtering using fixed point arithmetic (floats are awefully slow on GBA)
+	const int32_t i_rrc_taps_5[41]={-75823, -46045, 36705, 112983, 114474, 22747, -100569, -145924, -40434, 171200, 318455, 200478, -254712, -865969, -1209552, -796138, 657141, 3005882, 5648794, 7735778, 8528542, 7735778, 5648794, 3005882, 657141, -796138, -1209552, -865969, -254712, 200478, 318455, 171200, -40434, -145924, -100569, 22747, 114474, 112983, 36705, -46045, -75823};
+	int32_t last[41]; memset(last, 0, sizeof(last));
+	int64_t acc=0;
 	for(uint8_t i=0; i<sizeof(symbols); i++)
 	{
 		for(uint8_t j=0; j<5; j++)
@@ -194,11 +196,11 @@ int main(void)
 			else
 				last[40]=0;
 
-			acc=0.0f;
+			acc=0;
 			for(uint8_t k=0; k<41; k++)
-				acc+=last[k]*rrc_taps_5[k]; //slow!
+				acc+=last[k]*i_rrc_taps_5[k];
 			
-			*((int8_t*)&samples[0][0]+i*5+j)=acc*27.78125f;
+			*((int8_t*)&samples[0][0]+i*5+j)=acc>>(24-6); //shr by 24 sets gain to unity (or whatever the gain of the tap set is), but we need to crank it up some more
 		}
 	}
 
