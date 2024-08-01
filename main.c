@@ -8,27 +8,27 @@
 #include "fonts.h"
 
 //M17 stuff
-char msg[64];
+char msg[64];								//text message
 
-char dst_raw[10]="ALL";			//raw, unencoded destination address (default)
-char src_raw[10]="N0CALL";		//raw, unencoded source address (default)
+char dst_raw[10]="ALL";						//raw, unencoded destination address (default)
+char src_raw[10]="N0CALL";					//raw, unencoded source address (default)
 uint8_t can=0;
 
-lsf_t lsf;
+lsf_t lsf;									//Link Setup Frame data
 
-float full_packet[6800]={0.0f};
-uint8_t full_packet_data[32*25]={0};
+uint8_t full_packet_data[32*25]={0};		//packet payload
 uint32_t pkt_sym_cnt=0;
-uint16_t num_bytes=0;
+uint16_t num_bytes=0;						//size of payload in bytes
 
-uint8_t enc_bits[SYM_PER_PLD*2];
-uint8_t rf_bits[SYM_PER_PLD*2];
+uint8_t enc_bits[SYM_PER_PLD*2];			//encoded bits
+uint8_t rf_bits[SYM_PER_PLD*2];				//type-4 bits for transmission
+int8_t symbols[SYM_PER_FRA];				//frame symbols
 
 //audio playback
-uint32_t samples[241]; //int8_t samples, fs=24kHz
+uint32_t samples[2][240+1];					//S8 samples, fs=24kHz, enough for 40ms plus 4 extra samples (as int8_t)
 
 //key press detection
-volatile uint32_t key_states=0;
+volatile uint32_t key_states=0;				//for key scanning
 
 //Functions
 //low-level, hardware
@@ -89,6 +89,17 @@ void str_print(const uint16_t x, const uint16_t y, const uint8_t r, const uint8_
 	put_string(str, x, y, r, g, b);
 }
 
+//M17 - int8_t based functions (as opposed to libm17's float)
+void send_preamble_i(int8_t out[SYM_PER_FRA], uint32_t *cnt)
+{
+	//only pre-LSF is supported
+    for(uint16_t i=0; i<SYM_PER_FRA/2; i++) //40ms * 4800 = 192
+    {
+        out[(*cnt)++]=+3;
+        out[(*cnt)++]=-3;
+    }
+}
+
 void play_sample(uint32_t* sample, uint16_t len)
 {
 	REG_SOUNDCNT_H = 0; //clear the control register
@@ -122,19 +133,6 @@ int main(void)
 
 	//info header
 	str_print(0, 0*9, 255, 255, 255, "GBA"); str_print(4*6, 0*9, 255, 255, 255, "M"); str_print(5*6, 0*9, 255, 0, 0, "17"); str_print(8*6, 0*9, 255, 255, 255, "Packet Encoder by SP5WWP");
-
-	//generate sample
-	uint8_t cycle=6*4; //at 24kHz sample rate, 24 -> 1kHz
-	for(uint8_t i=0; i<cycle; i++)
-		*((int8_t*)samples+i)=floorf(127.0f * sinf((float)i/cycle * 2.0f * M_PI));
-	for(uint16_t i=1; i<sizeof(samples)/4/(cycle/4); i++)
-		memcpy((int8_t*)(&samples[i*(cycle/4)]), (int8_t*)samples, cycle);
-	//for(uint16_t i=0; i<sizeof(samples)/4; i++)
-		//samples[i]=0;
-	
-	//are our samples ok? plot a pretty sinewave
-	//for(uint8_t i=0; i<80; i++)
-		//set_pixel(i*3, 90-20.0f*(float)*((int8_t*)samples+i/*+(sizeof(samples)/4-80)*/)/127.0f, 0, 255, 0);
 
 	//IRQ
 	REG_INTR_HANDLER=(uint32_t)&irqh; //pointer to the interrupt handler function
@@ -180,26 +178,51 @@ int main(void)
 	conv_encode_LSF(enc_bits, &lsf);
 
 	//fill preamble
-	memset((uint8_t*)full_packet, 0, sizeof(full_packet));
-	send_preamble(full_packet, &pkt_sym_cnt, PREAM_LSF);
+	send_preamble_i(symbols, &pkt_sym_cnt);
+
+	int8_t last[41]; memset(last, 0, sizeof(last));
+	float acc=0.0f;
+	for(uint8_t i=0; i<sizeof(symbols); i++)
+	{
+		for(uint8_t j=0; j<5; j++)
+		{
+			for(uint8_t k=0; k<40; k++)
+				last[k]=last[k+1];
+
+			if(j==0)
+				last[40]=symbols[i];
+			else
+				last[40]=0;
+
+			acc=0.0f;
+			for(uint8_t k=0; k<41; k++)
+				acc+=last[k]*rrc_taps_5[k]; //slow!
+			
+			*((int8_t*)&samples[0][0]+i*5+j)=acc*27.78125f;
+		}
+	}
+
+	//are our samples ok? plot a pretty sinewave
+	//for(uint8_t i=0; i<80; i++)
+		//set_pixel(i*3, 90-20.0f*(float)*((int8_t*)&samples[0][0]+i/*+(sizeof(samples)/4-80)*/)/127.0f, 0, 255, 0);
 
 	//send LSF syncword
-	send_syncword(full_packet, &pkt_sym_cnt, SYNC_LSF);
+	//send_syncword(full_packet, &pkt_sym_cnt, SYNC_LSF);
 
 	//reorder bits
-	reorder_bits(rf_bits, enc_bits);
+	//reorder_bits(rf_bits, enc_bits);
 
 	//randomize
-	randomize_bits(rf_bits);
+	//randomize_bits(rf_bits);
 
 	//fill packet with LSF
-	send_data(full_packet, &pkt_sym_cnt, rf_bits);
+	//send_data(full_packet, &pkt_sym_cnt, rf_bits);
 
 	//generate frames
-	;
+	//;
 
 	//send EOT
-	send_eot(full_packet, &pkt_sym_cnt);
+	//send_eot(full_packet, &pkt_sym_cnt);
 
 	//display params
 	str_print(0, 2*9, 255, 255, 255, "DST: %s", dst_raw); str_print(15*6, 2*9, 255, 255, 255, "(%04X", dst_enc>>32); str_print(15*6, 2*9, 255, 255, 255, "%13X)", dst_enc);
@@ -228,12 +251,7 @@ int main(void)
 		{
 			if(!(REG_TM0CNT_H & TIMER_ENABLED)) //not playing samples?
 			{
-				for(uint8_t i=0; i<10-1; i++)
-				{
-					play_sample(samples, sizeof(samples)-4);
-					while(REG_TM0CNT_H & TIMER_ENABLED);
-				}
-				play_sample(samples, sizeof(samples));
+				play_sample(&samples[0][0], SYM_PER_FRA*5);
 			}
 		}
 	}
