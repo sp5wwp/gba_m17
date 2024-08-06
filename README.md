@@ -29,6 +29,7 @@ Additionally, you can run `make test` afterwards to give the freshly generated R
 Simply run `mgba-qt out_fixed.gba` (or `mgba-sdl`, depending on which one you intend to use).
 
 A window like the one shown below should appear.
+
 ![mgba emulated out_fixed.gba ROM](./imgs/mgba.png)
 
 ## Usage
@@ -38,5 +39,6 @@ Press the **A** button. The code should generate a valid baseband (160ms long) f
 The output baseband signal can be accessed through the 3.5mm headphone port. The phase of the signal is inverted. The signal can be used to drive M17-compatible analog transceivers through their 9600-baud inputs. Some amplification might be necessary, as the peak-to-peak voltage value is just slightly over 0.4V (at volume set to maximum). A logic-level MOSFET such as the BSS138 could then be used to pull the PTT line down for transmission. Its gate can be triggered with a peak detector (a simple diode/capacitor circuit should work) if a baseband amplifier is used.
 
 ## Decoding the baseband using [m17-packet-decode](https://github.com/M17-Project/M17_Implementations/blob/main/SP5WWP/m17-packet/m17-packet-decode.c)
-After passing the generated baseband through an appropriate [symbol synchronizer](https://wiki.gnuradio.org/index.php/Symbol_Sync), the resulting symbol stream can be decoded with `m17-packet-decode` supplied within a [reference M17 implementation](https://github.com/M17-Project/M17_Implementations): 
-![123](./imgs/decode.png)
+After passing the generated baseband through an appropriate [symbol synchronizer](https://wiki.gnuradio.org/index.php/Symbol_Sync), the resulting symbol stream can be decoded with `m17-packet-decode` supplied within the [reference M17 implementation](https://github.com/M17-Project/M17_Implementations):
+
+![Decoding M17 packets under Linux](./imgs/decode.png)
