@@ -32,6 +32,10 @@ uint32_t samples[4][240];					//S8 samples, fs=24kHz, enough for 40ms plus 4 ext
 //key press detection
 volatile uint32_t key_states=0;				//for key scanning
 
+//baseband upsampling and filtering using fixed point arithmetic (floats are awefully slow on GBA)
+//this set of taps is derived from `rrc_taps_5`
+const int32_t i_rrc_taps_5[41]={-75823, -46045, 36705, 112983, 114474, 22747, -100569, -145924, -40434, 171200, 318455, 200478, -254712, -865969, -1209552, -796138, 657141, 3005882, 5648794, 7735778, 8528542, 7735778, 5648794, 3005882, 657141, -796138, -1209552, -865969, -254712, 200478, 318455, 171200, -40434, -145924, -100569, 22747, 114474, 112983, 36705, -46045, -75823};
+
 //Functions
 //low-level, hardware
 void config_display(void)
@@ -164,6 +168,32 @@ void play_sample(uint32_t* sample, uint16_t len)
 	REG_TM0CNT_H = TIMER_ENABLED; //enable timer 0 - sample rate generator
 }
 
+//filter symbols, flt is assumed to be 41 taps long
+void filter_symbols(int8_t* out, const int8_t* in, const int32_t* flt)
+{
+	static int32_t last[41]; //memory for last samples
+
+	for(uint8_t i=0; i<SYM_PER_FRA; i++)
+	{
+		for(uint8_t j=0; j<5; j++)
+		{
+			for(uint8_t k=0; k<40; k++)
+				last[k]=last[k+1];
+
+			if(j==0)
+				last[40]=in[i];
+			else
+				last[40]=0;
+
+			int32_t acc=0;
+			for(uint8_t k=0; k<41; k++)
+				acc+=last[k]*flt[k];
+			
+			out[i*5+j]=acc>>(24-6); //shr by 24 sets gain to unity (or whatever the gain of the tap set is), but we need to crank it up some more
+		}
+	}
+}
+
 //interrupt handler
 void irqh(void)
 {
@@ -227,30 +257,7 @@ int main(void)
 	//send preamble
 	pkt_sym_cnt=0;
 	send_preamble_i(symbols, &pkt_sym_cnt);
-
-	//baseband upsampling and filtering using fixed point arithmetic (floats are awefully slow on GBA)
-	const int32_t i_rrc_taps_5[41]={-75823, -46045, 36705, 112983, 114474, 22747, -100569, -145924, -40434, 171200, 318455, 200478, -254712, -865969, -1209552, -796138, 657141, 3005882, 5648794, 7735778, 8528542, 7735778, 5648794, 3005882, 657141, -796138, -1209552, -865969, -254712, 200478, 318455, 171200, -40434, -145924, -100569, 22747, 114474, 112983, 36705, -46045, -75823};
-	int32_t last[41]; memset(last, 0, sizeof(last));
-	int64_t acc;
-	for(uint8_t i=0; i<sizeof(symbols); i++)
-	{
-		for(uint8_t j=0; j<5; j++)
-		{
-			for(uint8_t k=0; k<40; k++)
-				last[k]=last[k+1];
-
-			if(j==0)
-				last[40]=symbols[i];
-			else
-				last[40]=0;
-
-			acc=0;
-			for(uint8_t k=0; k<41; k++)
-				acc+=last[k]*i_rrc_taps_5[k];
-			
-			*((int8_t*)&samples[0][0]+i*5+j)=acc>>(24-6); //shr by 24 sets gain to unity (or whatever the gain of the tap set is), but we need to crank it up some more
-		}
-	}
+	filter_symbols((int8_t*)&samples[0][0], symbols, i_rrc_taps_5);
 
 	//are our samples ok? plot a pretty sinewave
 	//for(uint8_t i=0; i<80; i++)
@@ -258,74 +265,17 @@ int main(void)
 
 	//send LSF
 	send_frame_i(symbols, NULL, FRAME_LSF, &lsf);
-
-	for(uint8_t i=0; i<sizeof(symbols); i++)
-	{
-		for(uint8_t j=0; j<5; j++)
-		{
-			for(uint8_t k=0; k<40; k++)
-				last[k]=last[k+1];
-
-			if(j==0)
-				last[40]=symbols[i];
-			else
-				last[40]=0;
-
-			acc=0;
-			for(uint8_t k=0; k<41; k++)
-				acc+=last[k]*i_rrc_taps_5[k];
-			
-			*((int8_t*)&samples[1][0]+i*5+j)=acc>>(24-6); //shr by 24 sets gain to unity (or whatever the gain of the tap set is), but we need to crank it up some more
-		}
-	}
+	filter_symbols((int8_t*)&samples[1][0], symbols, i_rrc_taps_5);
 
 	//generate frames
 	full_packet_data[25]=0x80|(num_bytes<<2); //fix this (hardcoded single frame of length<=25)
 	send_frame_i(symbols, full_packet_data, FRAME_PKT, NULL); //no counter yet
-
-	for(uint8_t i=0; i<sizeof(symbols); i++)
-	{
-		for(uint8_t j=0; j<5; j++)
-		{
-			for(uint8_t k=0; k<40; k++)
-				last[k]=last[k+1];
-
-			if(j==0)
-				last[40]=symbols[i];
-			else
-				last[40]=0;
-
-			acc=0;
-			for(uint8_t k=0; k<41; k++)
-				acc+=last[k]*i_rrc_taps_5[k];
-			
-			*((int8_t*)&samples[2][0]+i*5+j)=acc>>(24-6); //shr by 24 sets gain to unity (or whatever the gain of the tap set is), but we need to crank it up some more
-		}
-	}
+	filter_symbols((int8_t*)&samples[2][0], symbols, i_rrc_taps_5);
 
 	//send EOT
 	pkt_sym_cnt=0;
 	send_eot_i(symbols, &pkt_sym_cnt);
-
-	for(uint8_t i=0; i<sizeof(symbols); i++)
-	{
-		for(uint8_t j=0; j<5; j++)
-		{
-			for(uint8_t k=0; k<40; k++)
-				last[k]=last[k+1];
-
-			if(j==0)
-				last[40]=symbols[i];
-			else
-				last[40]=0;
-
-			acc=0;
-			for(uint8_t k=0; k<41; k++)
-				acc+=last[k]*i_rrc_taps_5[k];
-			
-			*((int8_t*)&samples[3][0]+i*5+j)=acc>>(24-6); //shr by 24 sets gain to unity (or whatever the gain of the tap set is), but we need to crank it up some more
-		}
-	}
+	filter_symbols((int8_t*)&samples[3][0], symbols, i_rrc_taps_5);
 
 	//display params
 	str_print(0, 2*9, 255, 255, 255, "DST: %s", dst_raw); str_print(15*6, 2*9, 255, 255, 255, "(%04X", dst_enc>>32); str_print(15*6, 2*9, 255, 255, 255, "%13X)", dst_enc);
