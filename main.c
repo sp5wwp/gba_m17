@@ -35,8 +35,11 @@ uint32_t samples[4][240];					//S8 samples, fs=24kHz, enough for 40ms plus 4 ext
 volatile uint32_t key_states=0;				//for key scanning
 
 //baseband upsampling and filtering using fixed point arithmetic (floats are awefully slow on GBA)
-//this set of taps is derived from `rrc_taps_5`
-const int32_t i_rrc_taps_5[41]={-75823, -46045, 36705, 112983, 114474, 22747, -100569, -145924, -40434, 171200, 318455, 200478, -254712, -865969, -1209552, -796138, 657141, 3005882, 5648794, 7735778, 8528542, 7735778, 5648794, 3005882, 657141, -796138, -1209552, -865969, -254712, 200478, 318455, 171200, -40434, -145924, -100569, 22747, 114474, 112983, 36705, -46045, -75823};
+//both set of taps are derived directly from `rrc_taps_5`
+//the first one has the gain untouched
+//const int32_t i_rrc_taps_5[41]={-75823, -46045, 36705, 112983, 114474, 22747, -100569, -145924, -40434, 171200, 318455, 200478, -254712, -865969, -1209552, -796138, 657141, 3005882, 5648794, 7735778, 8528542, 7735778, 5648794, 3005882, 657141, -796138, -1209552, -865969, -254712, 200478, 318455, 171200, -40434, -145924, -100569, 22747, 114474, 112983, 36705, -46045, -75823};
+//the other has its gain multiplied by 64, to get rid of the additional shift right by 6
+const int32_t i_rrc_taps_5[41]={-4852652, -2946890, 2349126, 7230909, 7326343, 1455796, -6436427, -9339120, -2587800, 10956799, 20381138, 12830587, -16301598, -55421996, -77411320, -50952844, 42057000, 192376416, 361522816, 495089760, 545826688, 495089760, 361522816, 192376416, 42057000, -50952844, -77411320, -55421996, -16301598, 12830587, 20381138, 10956799, -2587800, -9339120, -6436427, 1455796, 7326343, 7230909, 2349126, -2946890, -4852652};
 
 //Functions
 //low-level, hardware
@@ -196,7 +199,7 @@ void filter_symbols(int8_t* out, const int8_t* in, const int32_t* flt, uint8_t p
 			for(uint8_t k=0; k<41; k++)
 				acc+=last[k]*flt[k];
 			
-			out[i*5+j]=acc>>(24-6); //shr by 24 sets gain to unity (or whatever the gain of the tap set is), but we need to crank it up some more
+			out[i*5+j]=acc>>24; //shr by 24 sets gain to unity (or whatever the gain of the tap set is), but we need to crank it up some more
 		}
 	}
 }
