@@ -80,3 +80,5 @@
 #define	REG_IME					*(volatile uint16_t*)(MEM_IO + 0x208)	// Interrupt Master Enable
 #define REG_INTR_HANDLER		*(volatile uint32_t*)(0x03007FFC)		// Interrupt Handler
 #define TIM1                    (1<<4)
+
+#define DS_BUSY                 (REG_TM0CNT_H & TIMER_ENABLED)          // Direct Sound busy?

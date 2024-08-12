@@ -7,15 +7,17 @@
 #include "gba.h"
 #include "fonts.h"
 
-#define DS_BUSY (REG_TM0CNT_H & TIMER_ENABLED)
+//input data
+struct settings_t
+{
+	char dst_raw[10];						//raw, unencoded destination address
+	char src_raw[10];						//raw, unencoded source address
+	uint8_t can;							//Channel Access Number
+	char msg[64];							//text message
+	uint8_t phase;							//baseband phase 1-normal, 0-inverted
+} settings;
 
 //M17 stuff
-char msg[64];								//text message
-
-char dst_raw[10]="ALL";						//raw, unencoded destination address (default)
-char src_raw[10]="N0CALL";					//raw, unencoded source address (default)
-uint8_t can=0;
-
 lsf_t lsf;									//Link Setup Frame data
 
 uint8_t full_packet_data[32*25]={0};		//packet payload
@@ -169,7 +171,7 @@ void play_sample(uint32_t* sample, uint16_t len)
 }
 
 //filter symbols, flt is assumed to be 41 taps long
-void filter_symbols(int8_t* out, const int8_t* in, const int32_t* flt)
+void filter_symbols(int8_t* out, const int8_t* in, const int32_t* flt, uint8_t phase_inv)
 {
 	static int32_t last[41]; //memory for last samples
 
@@ -181,7 +183,12 @@ void filter_symbols(int8_t* out, const int8_t* in, const int32_t* flt)
 				last[k]=last[k+1];
 
 			if(j==0)
-				last[40]=in[i];
+			{
+				if(phase_inv) //normal phase - invert the symbol stream as GBA inverts the output
+					last[40]=-in[i];
+				else
+					last[40]= in[i];
+			}
 			else
 				last[40]=0;
 
@@ -192,6 +199,37 @@ void filter_symbols(int8_t* out, const int8_t* in, const int32_t* flt)
 			out[i*5+j]=acc>>(24-6); //shr by 24 sets gain to unity (or whatever the gain of the tap set is), but we need to crank it up some more
 		}
 	}
+}
+
+//generate baseband samples - add args later
+void generate_baseband(void)
+{
+	//flush the RRC filter
+	int8_t flush[SYM_PER_FRA]={0};
+	filter_symbols(NULL, flush, i_rrc_taps_5, 1);
+
+	//generate preamble
+	pkt_sym_cnt=0;
+	send_preamble_i(symbols, &pkt_sym_cnt);
+	filter_symbols((int8_t*)&samples[0][0], symbols, i_rrc_taps_5, settings.phase);
+
+	//are our samples ok? plot a pretty sinewave
+	//for(uint8_t i=0; i<80; i++)
+		//set_pixel(i*3, 90-20.0f*(float)*((int8_t*)&samples[0][0]+i/*+(sizeof(samples)/4-80)*/)/127.0f, 0, 255, 0);
+
+	//generate LSF
+	send_frame_i(symbols, NULL, FRAME_LSF, &lsf);
+	filter_symbols((int8_t*)&samples[1][0], symbols, i_rrc_taps_5, settings.phase);
+
+	//generate frames
+	full_packet_data[25]=0x80|(num_bytes<<2); //fix this (hardcoded single frame of length<=25)
+	send_frame_i(symbols, full_packet_data, FRAME_PKT, NULL); //no counter yet
+	filter_symbols((int8_t*)&samples[2][0], symbols, i_rrc_taps_5, settings.phase);
+
+	//generate EOT
+	pkt_sym_cnt=0;
+	send_eot_i(symbols, &pkt_sym_cnt);
+	filter_symbols((int8_t*)&samples[3][0], symbols, i_rrc_taps_5, settings.phase);
 }
 
 //interrupt handler
@@ -219,15 +257,16 @@ int main(void)
 	REG_IME=1; //master enable interrupts
 	REG_IE = TIM1; //enable irq for timer 1
 
-	//M17 stuff
-	sprintf(msg, "Test message.");
-	sprintf(dst_raw, "ALL");
-	sprintf(src_raw, "N0CALL");
+	//input data
+	sprintf(settings.msg, "Test message.");
+	sprintf(settings.dst_raw, "ALL");
+	sprintf(settings.src_raw, "N0CALL");
+	settings.phase=1; //normal
 
 	//obtain data and append with CRC
 	//memset(full_packet_data, 0, 32*25);
 	full_packet_data[0]=0x05;
-	num_bytes=sprintf((char*)&full_packet_data[1], msg)+2; //0x05 and 0x00
+	num_bytes=sprintf((char*)&full_packet_data[1], settings.msg)+2; //0x05 and 0x00
 	uint16_t packet_crc=CRC_M17(full_packet_data, num_bytes);
 	full_packet_data[num_bytes]  =packet_crc>>8;
 	full_packet_data[num_bytes+1]=packet_crc&0xFF;
@@ -236,15 +275,15 @@ int main(void)
 	//encode dst, src for the lsf struct
 	uint64_t dst_enc=0, src_enc=0;
 	uint16_t type=0;
-	encode_callsign_value(&dst_enc, (uint8_t*)dst_raw);
-	encode_callsign_value(&src_enc, (uint8_t*)src_raw);
+	encode_callsign_value(&dst_enc, (uint8_t*)settings.dst_raw);
+	encode_callsign_value(&src_enc, (uint8_t*)settings.src_raw);
 	for(int8_t i=5; i>=0; i--)
 	{
 		lsf.dst[5-i]=(dst_enc>>(i*8))&0xFF;
 		lsf.src[5-i]=(src_enc>>(i*8))&0xFF;
 	}
 	
-	type=((uint16_t)0x01<<1)|((uint16_t)can<<7); //packet mode, content: data
+	type=((uint16_t)0x01<<1)|((uint16_t)settings.can<<7); //packet mode, content: data
 	lsf.type[0]=(uint16_t)type>>8;
 	lsf.type[1]=(uint16_t)type&0xFF;
 	memset(&lsf.meta, 0, 112/8);
@@ -254,35 +293,17 @@ int main(void)
 	lsf.crc[0]=lsf_crc>>8;
 	lsf.crc[1]=lsf_crc&0xFF;
 
-	//send preamble
-	pkt_sym_cnt=0;
-	send_preamble_i(symbols, &pkt_sym_cnt);
-	filter_symbols((int8_t*)&samples[0][0], symbols, i_rrc_taps_5);
-
-	//are our samples ok? plot a pretty sinewave
-	//for(uint8_t i=0; i<80; i++)
-		//set_pixel(i*3, 90-20.0f*(float)*((int8_t*)&samples[0][0]+i/*+(sizeof(samples)/4-80)*/)/127.0f, 0, 255, 0);
-
-	//send LSF
-	send_frame_i(symbols, NULL, FRAME_LSF, &lsf);
-	filter_symbols((int8_t*)&samples[1][0], symbols, i_rrc_taps_5);
-
-	//generate frames
-	full_packet_data[25]=0x80|(num_bytes<<2); //fix this (hardcoded single frame of length<=25)
-	send_frame_i(symbols, full_packet_data, FRAME_PKT, NULL); //no counter yet
-	filter_symbols((int8_t*)&samples[2][0], symbols, i_rrc_taps_5);
-
-	//send EOT
-	pkt_sym_cnt=0;
-	send_eot_i(symbols, &pkt_sym_cnt);
-	filter_symbols((int8_t*)&samples[3][0], symbols, i_rrc_taps_5);
-
 	//display params
-	str_print(0, 2*9, 255, 255, 255, "DST: %s", dst_raw); str_print(15*6, 2*9, 255, 255, 255, "(%04X", dst_enc>>32); str_print(15*6, 2*9, 255, 255, 255, "%13X)", dst_enc);
-	str_print(0, 3*9, 255, 255, 255, "SRC: %s", src_raw); str_print(15*6, 3*9, 255, 255, 255, "(%04X", src_enc>>32); str_print(15*6, 3*9, 255, 255, 255, "%13X)", src_enc);
-	str_print(0, 4*9, 255, 255, 255, "Message: %s", msg);
-	str_print(0, 6*9, 255, 255, 255, "LSF_CRC=%04X PKT_CRC=%04X", lsf_crc, packet_crc);
-	str_print(0, SCREEN_HEIGHT-1*9+1, 255, 255, 255, "Press A to transmit.");
+	str_print(0, 2*9, 255, 255, 255, "DST: %s", settings.dst_raw); str_print(15*6, 2*9, 255, 255, 255, "(%04X", dst_enc>>32); str_print(15*6, 2*9, 255, 255, 255, "%13X)", dst_enc);
+	str_print(0, 3*9, 255, 255, 255, "SRC: %s", settings.src_raw); str_print(15*6, 3*9, 255, 255, 255, "(%04X", src_enc>>32); str_print(15*6, 3*9, 255, 255, 255, "%13X)", src_enc);
+	str_print(0, 4*9, 255, 255, 255, "Message: %s", settings.msg);
+
+	str_print(0, 6*9, 255, 255, 255, "Phase: "); settings.phase==1 ? str_print(7*6, 6*9, 50, 255, 50, "normal") : str_print(7*6, 6*9, 255, 50, 50, "inverted");
+	str_print(0, 7*9, 255, 255, 255, "LSF CRC: 0x%04X", lsf_crc);
+	str_print(0, 8*9, 255, 255, 255, "PKT CRC: 0x%04X", packet_crc);
+
+	str_print(0, SCREEN_HEIGHT-2*9+1, 255, 50, 50, "No baseband. Press START to generate.");
+	str_print(0, SCREEN_HEIGHT-1*9+1, 255, 255, 255, "A: transmit, B: flip phase");
 
 	while(1)
 	{
@@ -292,19 +313,12 @@ int main(void)
 
 		//get current key states (REG_KEY_INPUT stores the states inverted)
 		key_states = ~REG_KEY_INPUT & KEY_ANY;
-
-		if(key_states & KEYPAD_LEFT)
-			put_letter('<', 100, 100, 0xFF, 0xFF, 0xFF);
-		else if(key_states & KEYPAD_RIGHT)
-			put_letter('>', 100, 100, 0xFF, 0xFF, 0xFF);
-		else
-			put_letter(127, 100, 100, 0, 0, 0); //clear
 		
-		if(key_states & BUTTON_A) //start playing samples
+		if(key_states & BUTTON_A) //"A" button pressed - start playing samples
 		{
 			if(!DS_BUSY) //not playing samples?
 			{
-				for(uint8_t i=0; i<4; i++)
+				for(uint8_t i=0; i<4; i++) //hardcoded length - 4 frames (preamble, LSF, data, EOT)
 				{
 					play_sample(&samples[i][0], SYM_PER_FRA*5);
 					while(DS_BUSY);
@@ -312,6 +326,23 @@ int main(void)
 				uint32_t x=0;
 				play_sample(&x, 4); //set the last 4 samples to 0 to set the idle voltage at 1/2 Vdd
 			}
+		}
+
+		else if(key_states & BUTTON_B) //"B" pressed - flip the phase setting
+		{
+			settings.phase = !settings.phase;
+			str_print(7*6, 6*9, 0, 0, 0, "\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F"); //clear
+			settings.phase==1 ? str_print(7*6, 6*9, 50, 255, 50, "normal") : str_print(7*6, 6*9, 255, 255, 50, "inverted");
+			for(uint16_t i=0; i<50000; i++) __asm("NOP"); //add a small delay
+		}
+
+		else if(key_states & BUTTON_START)
+		{
+			str_print(0, SCREEN_HEIGHT-2*9+1, 0, 0, 0, "\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F"); //clear
+			str_print(0, SCREEN_HEIGHT-2*9+1, 255, 255, 50, "Generating baseband...");
+			generate_baseband();
+			str_print(0, SCREEN_HEIGHT-2*9+1, 0, 0, 0, "Generating baseband..."); //clear
+			str_print(0, SCREEN_HEIGHT-2*9+1, 50, 255, 50, "Baseband ready.");
 		}
 	}
 
