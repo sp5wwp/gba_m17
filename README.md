@@ -33,7 +33,7 @@ A window like the one shown below should appear.
 ![mgba emulated out_fixed.gba ROM](./imgs/mgba.png)
 
 ## Usage
-Press the **A** button. The code should generate a valid baseband (160ms long) for the data displayed on the screen. That's all so far. The DST/SRC addresses are hardcoded.
+Press the **Start** button. The code should generate a valid baseband (160ms long) for the data displayed on the screen (with the selected phase setting). **A** button starts baseband playback, **B** button sets the signal's phase. The DST/SRC addresses are hardcoded.
 
 ## Final remarks
 The output baseband signal can be accessed through the 3.5mm headphone port. The phase of the signal is inverted. The signal can be used to drive M17-compatible analog transceivers through their 9600-baud inputs. Some amplification might be necessary, as the peak-to-peak voltage value is just slightly over 0.4V (at volume set to maximum). A logic-level MOSFET such as the BSS138 could then be used to pull the PTT line down for transmission. Its gate can be triggered with a peak detector (a simple diode/capacitor circuit should work) if a baseband amplifier is used.
