@@ -199,22 +199,22 @@ void filter_symbols(int8_t* out, const int8_t* in, const int32_t* flt, uint8_t p
 			for(uint8_t k=0; k<41; k++)
 				acc+=last[k]*flt[k];
 			
-			out[i*5+j]=acc>>24; //shr by 24 sets gain to unity (or whatever the gain of the tap set is), but we need to crank it up some more
+			if(out!=NULL) out[i*5+j]=acc>>24; //shr by 24 sets gain to unity (or whatever the gain of the tap set is), but we need to crank it up some more
 		}
 	}
 }
 
 //generate baseband samples - add args later
-void generate_baseband(void)
+void generate_baseband(uint8_t phase_inv)
 {
 	//flush the RRC filter
 	int8_t flush[SYM_PER_FRA]={0};
-	filter_symbols(NULL, flush, i_rrc_taps_5, 1);
+	filter_symbols(NULL, flush, i_rrc_taps_5, phase_inv);
 
 	//generate preamble
 	pkt_sym_cnt=0;
 	send_preamble_i(symbols, &pkt_sym_cnt);
-	filter_symbols((int8_t*)&samples[0][0], symbols, i_rrc_taps_5, settings.phase);
+	filter_symbols((int8_t*)&samples[0][0], symbols, i_rrc_taps_5, phase_inv);
 
 	//are our samples ok? plot a pretty sinewave
 	//for(uint8_t i=0; i<80; i++)
@@ -222,17 +222,17 @@ void generate_baseband(void)
 
 	//generate LSF
 	send_frame_i(symbols, NULL, FRAME_LSF, &lsf);
-	filter_symbols((int8_t*)&samples[1][0], symbols, i_rrc_taps_5, settings.phase);
+	filter_symbols((int8_t*)&samples[1][0], symbols, i_rrc_taps_5, phase_inv);
 
 	//generate frames
 	full_packet_data[25]=0x80|(num_bytes<<2); //fix this (hardcoded single frame of length<=25)
 	send_frame_i(symbols, full_packet_data, FRAME_PKT, NULL); //no counter yet
-	filter_symbols((int8_t*)&samples[2][0], symbols, i_rrc_taps_5, settings.phase);
+	filter_symbols((int8_t*)&samples[2][0], symbols, i_rrc_taps_5, phase_inv);
 
 	//generate EOT
 	pkt_sym_cnt=0;
 	send_eot_i(symbols, &pkt_sym_cnt);
-	filter_symbols((int8_t*)&samples[3][0], symbols, i_rrc_taps_5, settings.phase);
+	filter_symbols((int8_t*)&samples[3][0], symbols, i_rrc_taps_5, phase_inv);
 }
 
 //interrupt handler
@@ -343,7 +343,7 @@ int main(void)
 		{
 			str_print(0, SCREEN_HEIGHT-2*9+1, 0, 0, 0, "\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F\x7F"); //clear
 			str_print(0, SCREEN_HEIGHT-2*9+1, 255, 255, 50, "Generating baseband...");
-			generate_baseband();
+			generate_baseband(settings.phase);
 			str_print(0, SCREEN_HEIGHT-2*9+1, 0, 0, 0, "Generating baseband..."); //clear
 			str_print(0, SCREEN_HEIGHT-2*9+1, 50, 255, 50, "Baseband ready.");
 		}
