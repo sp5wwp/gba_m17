@@ -267,7 +267,7 @@ int main(void)
 	settings.phase=1; //normal
 
 	//obtain data and append with CRC
-	//memset(full_packet_data, 0, 32*25);
+	memset(full_packet_data, 0, 1*25); //replace with 32*25
 	full_packet_data[0]=0x05;
 	num_bytes=sprintf((char*)&full_packet_data[1], settings.msg)+2; //0x05 and 0x00
 	uint16_t packet_crc=CRC_M17(full_packet_data, num_bytes);
