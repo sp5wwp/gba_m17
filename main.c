@@ -262,7 +262,7 @@ int main(void)
 
 	//input data
 	sprintf(settings.msg, "Test message.");
-	sprintf(settings.dst_raw, "ALL");
+	sprintf(settings.dst_raw, "@ALL");
 	sprintf(settings.src_raw, "N0CALL");
 	settings.phase=1; //normal
 
