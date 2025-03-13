@@ -100,65 +100,6 @@ void str_print(const uint16_t x, const uint16_t y, const uint8_t r, const uint8_
 	put_string(str, x, y, r, g, b);
 }
 
-//M17 - int8_t based functions (as opposed to libm17's float)
-void send_preamble_i(int8_t out[SYM_PER_FRA], uint32_t *cnt)
-{
-	//only pre-LSF is supported
-    for(uint16_t i=0; i<SYM_PER_FRA/2; i++) //40ms * 4800 = 192
-    {
-        out[(*cnt)++]=+3;
-        out[(*cnt)++]=-3;
-    }
-}
-
-void send_syncword_i(int8_t out[SYM_PER_SWD], uint32_t *cnt, const uint16_t syncword)
-{
-    for(uint8_t i=0; i<SYM_PER_SWD*2; i+=2)
-    {
-        out[(*cnt)++]=symbol_map[(syncword>>(14-i))&3];
-    }
-}
-
-void send_data_i(int8_t out[SYM_PER_PLD], uint32_t *cnt, const uint8_t* in)
-{
-    for(uint16_t i=0; i<SYM_PER_PLD; i++) //40ms * 4800 - 8 (syncword)
-    {
-        out[(*cnt)++]=symbol_map[in[2*i]*2+in[2*i+1]];
-    }
-}
-
-void send_eot_i(int8_t out[SYM_PER_FRA], uint32_t *cnt)
-{
-    for(uint16_t i=0; i<SYM_PER_FRA; i++) //40ms * 4800 = 192
-    {
-        out[(*cnt)++]=eot_symbols[i%8];
-    }
-}
-
-void send_frame_i(int8_t out[SYM_PER_FRA], const uint8_t* data, const frame_t type, const lsf_t* lsf)
-{
-    uint8_t enc_bits[SYM_PER_PLD*2];    //type-2 bits, unpacked
-    uint8_t rf_bits[SYM_PER_PLD*2];     //type-4 bits, unpacked
-    uint32_t sym_cnt=0;                 //symbols written counter
-
-    if(type==FRAME_LSF)
-    {
-        send_syncword_i(out, &sym_cnt, SYNC_LSF);
-        conv_encode_LSF(enc_bits, lsf);
-    }
-    else if(type==FRAME_PKT)
-    {
-		(void)lsf;
-        send_syncword_i(out, &sym_cnt, SYNC_PKT);
-        conv_encode_packet_frame(enc_bits, data); //packet frames require 200-bit payload chunks plus a 6-bit counter
-    }
-
-    //common stuff
-    reorder_bits(rf_bits, enc_bits);
-    randomize_bits(rf_bits);
-    send_data_i(out, &sym_cnt, rf_bits);
-}
-
 void play_sample(uint32_t* sample, uint16_t len)
 {
 	REG_SOUNDCNT_H = 0; //clear the control register
@@ -213,7 +154,7 @@ void generate_baseband(uint8_t phase_inv)
 
 	//generate preamble
 	pkt_sym_cnt=0;
-	send_preamble_i(symbols, &pkt_sym_cnt);
+	gen_preamble_i8(symbols, &pkt_sym_cnt, PREAM_LSF);
 	filter_symbols((int8_t*)&samples[0][0], symbols, i_rrc_taps_5, phase_inv);
 
 	//are our samples ok? plot a pretty sinewave
@@ -221,17 +162,17 @@ void generate_baseband(uint8_t phase_inv)
 		//set_pixel(i*3, 90-20.0f*(float)*((int8_t*)&samples[0][0]+i/*+(sizeof(samples)/4-80)*/)/127.0f, 0, 255, 0);
 
 	//generate LSF
-	send_frame_i(symbols, NULL, FRAME_LSF, &lsf);
+	gen_frame_i8(symbols, NULL, FRAME_LSF, &lsf, 0, 0);
 	filter_symbols((int8_t*)&samples[1][0], symbols, i_rrc_taps_5, phase_inv);
 
 	//generate frames
 	full_packet_data[25]=0x80|(num_bytes<<2); //fix this (hardcoded single frame of length<=25)
-	send_frame_i(symbols, full_packet_data, FRAME_PKT, NULL); //no counter yet
+	gen_frame_i8(symbols, full_packet_data, FRAME_PKT, NULL, 0, 0); //no counter yet
 	filter_symbols((int8_t*)&samples[2][0], symbols, i_rrc_taps_5, phase_inv);
 
 	//generate EOT
 	pkt_sym_cnt=0;
-	send_eot_i(symbols, &pkt_sym_cnt);
+	gen_eot_i8(symbols, &pkt_sym_cnt);
 	filter_symbols((int8_t*)&samples[3][0], symbols, i_rrc_taps_5, phase_inv);
 }
 
