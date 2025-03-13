@@ -227,7 +227,7 @@ int main(void)
 		lsf.src[5-i]=(src_enc>>(i*8))&0xFF;
 	}
 	
-	type=((uint16_t)0x01<<1)|((uint16_t)settings.can<<7); //packet mode, content: data
+	type=M17_TYPE_PACKET | M17_TYPE_CAN(settings.can); //packet mode
 	lsf.type[0]=(uint16_t)type>>8;
 	lsf.type[1]=(uint16_t)type&0xFF;
 	memset(&lsf.meta, 0, 112/8);
